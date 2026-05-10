@@ -1,0 +1,38 @@
+{
+  "name": "carrefour-mcp",
+  "version": "1.0.0",
+  "description": "MCP server skeleton for Carrefour product search",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "carrefour-mcp": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "cli": "tsx src/cli.ts",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "install:browsers": "playwright install chromium"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "cheerio": "^1.2.0",
+    "commander": "^14.0.2",
+    "express": "^5.1.0",
+    "playwright": "^1.54.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.7.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.5"
+  },
+  "packageManager": "pnpm@10.20.0"
+}
