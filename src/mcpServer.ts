@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
+import { getCarrefourProduct } from "./tools/getProduct.js";
 import { searchCarrefourProducts } from "./tools/searchProducts.js";
 
 export function createServer(): McpServer {
@@ -10,7 +11,7 @@ export function createServer(): McpServer {
     },
     {
       instructions:
-        "This server provides Carrefour France product discovery tools. Use search_products to run a full-text product search on carrefour.fr and return structured product results.",
+        "This server provides Carrefour France product discovery tools. Use search_products to run a full-text product search and get_product to retrieve detailed data for a specific product URL.",
     },
   );
 
@@ -51,6 +52,44 @@ export function createServer(): McpServer {
             {
               type: "text",
               text: `search_products failed: ${message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_product",
+    {
+      title: "Get Carrefour product details",
+      description:
+        "Fetch a Carrefour product page and return structured details such as price, unit price, Nutri-Score, ingredients, and nutrition facts when available.",
+      inputSchema: {
+        url: z.string().url().describe("Absolute Carrefour product URL"),
+      },
+    },
+    async ({ url }) => {
+      try {
+        const result = await getCarrefourProduct(url);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `get_product failed: ${message}`,
             },
           ],
           isError: true,

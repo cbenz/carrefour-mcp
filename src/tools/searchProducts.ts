@@ -7,6 +7,7 @@ import { chromium, type Browser } from "playwright";
 export type Product = {
   name: string;
   url: string;
+  id?: string;
   price?: number;
   currency?: string;
   image?: string;
@@ -284,9 +285,14 @@ function extractProductsFromRenderedHtml(html: string): Product[] {
       return;
     }
 
+    // Extract product ID from URL: /p/<product-name>-<product-id>
+    const idMatch = normalizedUrl.match(/-([\d]+)(?:\?|$)/);
+    const id = idMatch ? idMatch[1] : undefined;
+
     products.push({
       name,
       url: normalizedUrl,
+      id,
       price: parsePriceText(priceText),
       currency: priceText?.includes("€") ? "EUR" : undefined,
       image: normalizeUrl(image),

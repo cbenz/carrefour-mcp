@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { Command, CommanderError, InvalidArgumentError } from "commander";
+import { closeProductBrowser, getCarrefourProduct } from "./tools/getProduct.js";
 import {
   closeBrowser,
   searchCarrefourProducts,
@@ -30,6 +31,7 @@ program
       "Examples:",
       '  carrefour-mcp search_products "jus de carottes"',
       '  carrefour-mcp search_products "jus de carottes" --limit 5',
+      '  carrefour-mcp get_product "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379"',
     ].join("\n"),
   );
 
@@ -51,6 +53,15 @@ program
     },
   );
 
+program
+  .command("get_product")
+  .description("Fetch a Carrefour product page and print the raw JSON payload")
+  .argument("<url>", "Absolute Carrefour product URL")
+  .action(async (url: string): Promise<void> => {
+    const result = await getCarrefourProduct(url);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  });
+
 program.exitOverride();
 
 let exitCode = 0;
@@ -66,6 +77,7 @@ try {
   }
 } finally {
   await closeBrowser().catch(() => undefined);
+  await closeProductBrowser().catch(() => undefined);
 }
 
 if (exitCode !== 0) {

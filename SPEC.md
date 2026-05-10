@@ -28,6 +28,7 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 ## MCP Tools
 
 - `search_products`: exécute une requête de recherche full-text et retourne une liste de produits correspondants
+- `get_product`: récupère les détails d'une fiche produit Carrefour à partir de son URL
 
 ### `search_products`
 
@@ -62,3 +63,30 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - `--limit <number>` pour limiter le nombre de produits retournés
 - Sortie:
   - JSON brut correspondant aux données structurées du tool `search_products`
+
+### `get_product`
+
+- Input:
+  - `url` (string, requis, URL absolue d'une fiche produit Carrefour)
+- Output:
+  - détails du produit avec au minimum:
+    - `name`
+    - `url`
+    - `price` (quand disponible)
+    - `currency` (quand disponible)
+    - `unitPrice` (quand disponible, ex: `€/L`)
+    - `nutriScore` (quand disponible)
+    - `ingredients` (quand disponible)
+    - `nutritionFacts` (quand disponible)
+    - `images` (quand disponibles)
+- Implémentation:
+  - la page produit est chargée via Playwright (Chromium headless)
+  - l'extraction se fait depuis le DOM rendu de la fiche produit
+  - un repli JSON-LD est utilisé pour certains champs structurés (ex: marque, prix) quand disponible
+
+### CLI (`get_product`)
+
+- Commande:
+  - `carrefour-mcp get_product "https://www.carrefour.fr/p/..."`
+- Sortie:
+  - JSON brut correspondant aux données structurées du tool `get_product`

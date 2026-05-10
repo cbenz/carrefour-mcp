@@ -5,7 +5,9 @@ carrefour-mcp lets you search products on Carrefour France and get structured re
 ## Features
 
 - MCP tool available: search_products
+- MCP tool available: get_product
 - CLI command available: carrefour-mcp search_products
+- CLI command available: carrefour-mcp get_product
 - Supported server modes: stdio, http, or both
 
 ## Prerequisites
@@ -57,6 +59,7 @@ Run directly from source (no rebuild required):
 ```bash
 pnpm cli -- search_products "jus de carottes"
 pnpm cli -- search_products "jus de carottes" --limit 5
+pnpm cli -- get_product "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379"
 ```
 
 Use the installed binary command:
@@ -66,11 +69,21 @@ pnpm build
 pnpm link --global
 carrefour-mcp search_products "jus de carottes"
 carrefour-mcp search_products "jus de carottes" --limit 5
+carrefour-mcp get_product "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379"
 ```
 
 Output format:
 
 - Raw JSON on stdout
+
+`get_product` returns detailed product information when available, including:
+
+- product name and URL
+- price and currency
+- price per unit (for example `€/L`)
+- Nutri-Score
+- ingredients and nutrition facts
+- product images
 
 ## HTTP Endpoints
 
