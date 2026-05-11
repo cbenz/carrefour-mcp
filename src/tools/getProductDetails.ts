@@ -1,5 +1,7 @@
 import * as cheerio from "cheerio";
-import { chromium, type Browser } from "playwright";
+import type { Page } from "playwright";
+import { createCarrefourContext } from "../auth/session.js";
+import { closeSharedBrowser, getSharedBrowser } from "../playwright.js";
 
 export type ProductUnitPrice = {
   value: number;
@@ -45,30 +47,76 @@ type ParsedQuantity = {
 
 const DEFAULT_CURRENCY = "EUR";
 
-let browserPromise: Promise<Browser> | undefined;
-
-async function getBrowser(): Promise<Browser> {
-  if (!browserPromise) {
-    browserPromise = chromium.launch({ headless: true }).catch((error) => {
-      browserPromise = undefined;
-      throw error;
-    });
-  }
-
-  return browserPromise;
+export async function closeProductBrowser(): Promise<void> {
+  await closeSharedBrowser();
 }
 
-export async function closeProductBrowser(): Promise<void> {
-  if (!browserPromise) {
-    return;
+function resolveProductUrl(productRef: string): string {
+  const trimmedRef = productRef.trim();
+
+  if (trimmedRef.length === 0) {
+    throw new Error("Product reference must not be empty");
   }
 
-  const browser = await browserPromise.catch(() => undefined);
-  browserPromise = undefined;
-
-  if (browser) {
-    await browser.close();
+  if (/^\d{6,}$/.test(trimmedRef)) {
+    return `https://www.carrefour.fr/p/${trimmedRef}`;
   }
+
+  if (/^https?:\/\//i.test(trimmedRef)) {
+    return trimmedRef;
+  }
+
+  if (trimmedRef.startsWith("/")) {
+    return `https://www.carrefour.fr${trimmedRef}`;
+  }
+
+  if (/^(p|produit)\//i.test(trimmedRef)) {
+    return `https://www.carrefour.fr/${trimmedRef}`;
+  }
+
+  throw new Error(
+    "Invalid product reference: expected an absolute URL or a numeric Carrefour product ID",
+  );
+}
+
+function extractNumericProductId(productRef: string): string | undefined {
+  const trimmedRef = productRef.trim();
+  if (/^\d{6,}$/.test(trimmedRef)) {
+    return trimmedRef;
+  }
+
+  const fromUrlMatch = trimmedRef.match(/-(\d{6,})(?:$|[/?#])/);
+  return fromUrlMatch?.[1];
+}
+
+async function findProductUrlFromSearch(
+  page: Page,
+  productId: string,
+): Promise<string | undefined> {
+  const searchUrl = `https://www.carrefour.fr/s?q=${encodeURIComponent(productId)}`;
+  const searchResponse = await page.goto(searchUrl, {
+    waitUntil: "domcontentloaded",
+    timeout: 30000,
+  });
+
+  if (!searchResponse || searchResponse.status() >= 400) {
+    return undefined;
+  }
+
+  await page
+    .waitForLoadState("networkidle", { timeout: 10000 })
+    .catch(() => undefined);
+
+  const match = await page.evaluate((id) => {
+    const links = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>('a[href*="/p/"]'),
+    );
+
+    const matchingLink = links.find((link) => link.getAttribute("href")?.includes(id));
+    return matchingLink?.getAttribute("href") ?? undefined;
+  }, productId);
+
+  return normalizeUrl(match);
 }
 
 function normalizeUrl(url: string | undefined): string | undefined {
@@ -400,27 +448,67 @@ function extractProductDetailsFromHtml(
     normalizeUrl(fallbackUrl) ??
     fallbackUrl;
 
+  const productId = extractNumericProductId(url);
+
   const normalizedName = name.toLowerCase();
+  const domImageCandidates = $("main img")
+    .toArray()
+    .map((img) => ({
+      src: normalizeUrl($(img).attr("src")),
+      alt: collapseWhitespace($(img).attr("alt") ?? "").toLowerCase(),
+    }))
+    .filter(
+      (image): image is { src: string; alt: string } =>
+        typeof image.src === "string" &&
+        !image.src.startsWith("data:") &&
+        (image.src.includes("media.carrefour.fr/medias/") ||
+          image.src.includes("/medias/")),
+    )
+    .map((image) => ({
+      src: image.src,
+      score:
+        (normalizedName.length > 0 && image.alt.includes(normalizedName)
+          ? 4
+          : 0) +
+        (productId && image.src.includes(productId) ? 3 : 0) +
+        (image.src.includes("/540x540/") ? 2 : 0) +
+        (image.src.includes("/200x200/") ? 1 : 0),
+    }))
+    .filter((image) => {
+      if (productId) {
+        return (
+          image.src.includes(productId) ||
+          (normalizedName.length > 0 && image.score >= 4)
+        );
+      }
+
+      if (normalizedName.length > 0) {
+        return image.score >= 4;
+      }
+
+      return image.score > 0;
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((image) => image.src);
+
+  const metadataImageCandidates = [
+    normalizeUrl($("meta[property='og:image']").attr("content")),
+    normalizeUrl($("meta[name='twitter:image']").attr("content")),
+    ...$("link[rel='preload'][as='image']")
+      .toArray()
+      .map((link) => normalizeUrl($(link).attr("href"))),
+  ].filter((image): image is string => typeof image === "string");
+
+  const ldJsonImages = (Array.isArray(ldProduct?.image)
+    ? ldProduct.image
+    : [ldProduct?.image]
+  )
+    .map((image) => normalizeUrl(image))
+    .filter((image): image is string => typeof image === "string");
+
   const images = Array.from(
-    new Set(
-      $("main img")
-        .toArray()
-        .map((img) => ({
-          src: normalizeUrl($(img).attr("src")),
-          alt: collapseWhitespace($(img).attr("alt") ?? "").toLowerCase(),
-        }))
-        .filter(
-          (image) =>
-            typeof image.src === "string" &&
-            !image.src.startsWith("data:") &&
-            (image.src.includes("media.carrefour.fr/medias/") ||
-              image.src.includes("/medias/")) &&
-            (normalizedName.length === 0 || image.alt.includes(normalizedName)),
-        )
-        .map((image) => image.src as string)
-        .slice(0, 12),
-    ),
-  );
+    new Set([...domImageCandidates, ...metadataImageCandidates, ...ldJsonImages]),
+  ).slice(0, 12);
 
   const titleQuantity =
     collapseWhitespace($("title").text()).match(
@@ -478,38 +566,38 @@ function extractProductDetailsFromHtml(
     ingredients,
     description,
     nutritionFacts,
-    images:
-      images.length > 0
-        ? images
-        : (Array.isArray(ldProduct?.image)
-            ? ldProduct.image
-            : [ldProduct?.image]
-          )
-            .map((image) => normalizeUrl(image))
-            .filter((image): image is string => typeof image === "string"),
+    images,
   };
 }
 
 export async function getCarrefourProduct(
-  productUrl: string,
+  productRef: string,
 ): Promise<ProductDetails> {
-  const browser = await getBrowser();
-  const context = await browser.newContext({
-    locale: "fr-FR",
-    userAgent:
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-    viewport: {
-      width: 1440,
-      height: 1200,
-    },
+  const productUrl = resolveProductUrl(productRef);
+  const productId = extractNumericProductId(productRef);
+  const browser = await getSharedBrowser();
+  const context = await createCarrefourContext(browser, {
+    useAuth: true,
   });
 
   try {
     const page = await context.newPage();
-    const response = await page.goto(productUrl, {
+    let targetUrl = productUrl;
+    let response = await page.goto(targetUrl, {
       waitUntil: "domcontentloaded",
       timeout: 30000,
     });
+
+    if (response?.status() === 404 && productId) {
+      const discoveredUrl = await findProductUrlFromSearch(page, productId);
+      if (discoveredUrl) {
+        targetUrl = discoveredUrl;
+        response = await page.goto(targetUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: 30000,
+        });
+      }
+    }
 
     if (!response) {
       throw new Error("Carrefour product page did not return a response");
@@ -534,8 +622,10 @@ export async function getCarrefourProduct(
 
 export const __testing = {
   computeUnitPriceFromPriceAndQuantity,
+  extractNumericProductId,
   extractProductDetailsFromHtml,
   extractUnitPrice,
   parseLdJsonProduct,
   parseFrenchDecimal,
+  resolveProductUrl,
 };

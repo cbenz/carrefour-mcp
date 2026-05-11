@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import * as cheerio from "cheerio";
-import { chromium, type Browser } from "playwright";
+import { createCarrefourContext } from "../auth/session.js";
+import { closeSharedBrowser, getSharedBrowser } from "../playwright.js";
 
 export type Product = {
   name: string;
@@ -40,34 +41,8 @@ const SEARCH_BASE_URL = "https://www.carrefour.fr/s";
 const DEFAULT_CACHE_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_CACHE_DIR = path.join(process.cwd(), ".cache", "carrefour-mcp");
 
-let browserPromise: Promise<Browser> | undefined;
-
-async function getBrowser(): Promise<Browser> {
-  if (!browserPromise) {
-    browserPromise = chromium
-      .launch({
-        headless: true,
-      })
-      .catch((error) => {
-        browserPromise = undefined;
-        throw error;
-      });
-  }
-
-  return browserPromise;
-}
-
 export async function closeBrowser(): Promise<void> {
-  if (!browserPromise) {
-    return;
-  }
-
-  const browser = await browserPromise.catch(() => undefined);
-  browserPromise = undefined;
-
-  if (browser) {
-    await browser.close();
-  }
+  await closeSharedBrowser();
 }
 
 function parsePriceText(value: string | undefined): number | undefined {
@@ -202,15 +177,9 @@ async function loadSearchPageDataWithCache(
 }
 
 async function loadSearchPageData(url: string): Promise<LoadedSearchPage> {
-  const browser = await getBrowser();
-  const context = await browser.newContext({
-    locale: "fr-FR",
-    userAgent:
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-    viewport: {
-      width: 1440,
-      height: 1200,
-    },
+  const browser = await getSharedBrowser();
+  const context = await createCarrefourContext(browser, {
+    useAuth: true,
   });
 
   try {

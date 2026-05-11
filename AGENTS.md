@@ -20,6 +20,10 @@
 - écris les commentaires en anglais
 - écris les messages destinés à l'utilisateur en anglais
 
+## Règles de données
+
+- les dates en sortie de tool doivent être au format ISO 8601
+
 ## Règles de test
 
 - les tests unitaires doivent être écrits en anglais

@@ -1,6 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
-import { getCarrefourProduct } from "./tools/getProduct.js";
+import {
+  captureCarrefourAuthFromCdp,
+  getCarrefourAuthStatus,
+  loginCarrefourAuth,
+  logoutCarrefourAuth,
+} from "./tools/auth.js";
+import { getCarrefourProduct } from "./tools/getProductDetails.js";
+import { getCarrefourOrderDetails } from "./tools/getOrderDetails.js";
+import { listCarrefourOrders } from "./tools/listOrders.js";
 import { searchCarrefourProducts } from "./tools/searchProducts.js";
 
 export function createServer(): McpServer {
@@ -11,7 +19,266 @@ export function createServer(): McpServer {
     },
     {
       instructions:
-        "This server provides Carrefour France product discovery tools. Use search_products to run a full-text product search and get_product to retrieve detailed data for a specific product URL.",
+        "This server provides Carrefour France product discovery tools. Use search_products to run a full-text product search and get_product_details to retrieve detailed data for a specific product URL or product ID.",
+    },
+  );
+
+  server.registerTool(
+    "auth_login",
+    {
+      title: "Authenticate Carrefour account",
+      description:
+        "Open a visible browser for manual Carrefour login and save the authenticated browser session state.",
+      inputSchema: {
+        timeoutMs: z
+          .number()
+          .int()
+          .min(10000)
+          .max(600000)
+          .optional()
+          .describe("Optional login timeout in milliseconds"),
+      },
+    },
+    async ({ timeoutMs }) => {
+      try {
+        const result = await loginCarrefourAuth(timeoutMs);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `auth_login failed: ${message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "auth_capture_cdp",
+    {
+      title: "Capture auth from existing browser",
+      description:
+        "Attach to an existing authenticated Chrome/Chromium session over CDP and save Carrefour auth state.",
+      inputSchema: {
+        cdpUrl: z
+          .string()
+          .url()
+          .optional()
+          .describe("CDP endpoint URL, for example http://127.0.0.1:9222"),
+      },
+    },
+    async ({ cdpUrl }) => {
+      try {
+        const result = await captureCarrefourAuthFromCdp(cdpUrl);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `auth_capture_cdp failed: ${message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "auth_status",
+    {
+      title: "Check Carrefour auth status",
+      description:
+        "Check whether an authenticated Carrefour browser session is available and still valid.",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const result = await getCarrefourAuthStatus();
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `auth_status failed: ${message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "auth_logout",
+    {
+      title: "Clear Carrefour auth session",
+      description:
+        "Delete the locally stored Carrefour authentication state file.",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const result = await logoutCarrefourAuth();
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `auth_logout failed: ${message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "list_orders",
+    {
+      title: "List Carrefour account orders",
+      description:
+        "List past Carrefour orders from the authenticated account history page.",
+      inputSchema: {
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .default(20)
+          .describe("Maximum number of orders to return"),
+        cdpUrl: z
+          .string()
+          .url()
+          .optional()
+          .describe(
+            "Optional CDP endpoint URL for an already authenticated browser",
+          ),
+      },
+    },
+    async ({ limit, cdpUrl }) => {
+      try {
+        const result = await listCarrefourOrders(limit, cdpUrl);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `list_orders failed: ${message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_order_details",
+    {
+      title: "Get Carrefour order details",
+      description:
+        "Fetch a Carrefour order details page and return structured order fields such as amount, date, delivery slot, and invoice links.",
+      inputSchema: {
+        orderRef: z
+          .string()
+          .min(1)
+          .describe(
+            "Order reference: either a numeric order id or an absolute Carrefour order details URL",
+          ),
+        cdpUrl: z
+          .string()
+          .url()
+          .optional()
+          .describe(
+            "Optional CDP endpoint URL for an already authenticated browser",
+          ),
+      },
+    },
+    async ({ orderRef, cdpUrl }) => {
+      try {
+        const result = await getCarrefourOrderDetails(orderRef, cdpUrl);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `get_order_details failed: ${message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
     },
   );
 
@@ -61,13 +328,18 @@ export function createServer(): McpServer {
   );
 
   server.registerTool(
-    "get_product",
+    "get_product_details",
     {
       title: "Get Carrefour product details",
       description:
         "Fetch a Carrefour product page and return structured details such as price, unit price, Nutri-Score, ingredients, and nutrition facts when available.",
       inputSchema: {
-        url: z.string().url().describe("Absolute Carrefour product URL"),
+        url: z
+          .string()
+          .min(1)
+          .describe(
+            "Product reference: absolute Carrefour product URL or numeric product ID",
+          ),
       },
     },
     async ({ url }) => {
@@ -89,7 +361,7 @@ export function createServer(): McpServer {
           content: [
             {
               type: "text",
-              text: `get_product failed: ${message}`,
+              text: `get_product_details failed: ${message}`,
             },
           ],
           isError: true,

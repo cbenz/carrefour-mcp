@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { __testing } from "./getProduct.js";
+import { __testing } from "./getProductDetails.js";
 
 test("extractProductDetailsFromHtml extracts key product data", () => {
   const html = `
@@ -141,4 +141,38 @@ test("computeUnitPriceFromPriceAndQuantity infers €/L and €/kg", () => {
     unit: "kg",
     raw: "3,50 € / 250g",
   });
+});
+
+test("resolveProductUrl supports product IDs and URLs", () => {
+  expect(__testing.resolveProductUrl("3608580823445")).toBe(
+    "https://www.carrefour.fr/p/3608580823445",
+  );
+
+  expect(
+    __testing.resolveProductUrl(
+      "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379",
+    ),
+  ).toBe(
+    "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379",
+  );
+
+  expect(__testing.resolveProductUrl("/p/3608580823445")).toBe(
+    "https://www.carrefour.fr/p/3608580823445",
+  );
+});
+
+test("extractNumericProductId detects IDs from different references", () => {
+  expect(__testing.extractNumericProductId("3608580823445")).toBe(
+    "3608580823445",
+  );
+
+  expect(
+    __testing.extractNumericProductId(
+      "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379",
+    ),
+  ).toBe("3560070583379");
+
+  expect(__testing.extractNumericProductId("https://www.carrefour.fr/p/abc")).toBe(
+    undefined,
+  );
 });
