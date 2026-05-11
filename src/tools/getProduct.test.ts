@@ -64,7 +64,6 @@ test("extractProductDetailsFromHtml extracts key product data", () => {
   );
 
   expect(result).toMatchObject({
-    source: "carrefour.fr",
     name: "Jus de Carotte Pur Jus CARREFOUR EXTRA",
     url: "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379",
     brand: "CARREFOUR EXTRA",
@@ -129,13 +128,13 @@ test("computeUnitPriceFromPriceAndQuantity infers €/L and €/kg", () => {
     raw: "2,29 € / 1L",
   });
 
-  expect(
-    __testing.computeUnitPriceFromPriceAndQuantity(2.29, "500ml"),
-  ).toEqual({
-    value: 4.58,
-    unit: "l",
-    raw: "2,29 € / 500ml",
-  });
+  expect(__testing.computeUnitPriceFromPriceAndQuantity(2.29, "500ml")).toEqual(
+    {
+      value: 4.58,
+      unit: "l",
+      raw: "2,29 € / 500ml",
+    },
+  );
 
   expect(__testing.computeUnitPriceFromPriceAndQuantity(3.5, "250g")).toEqual({
     value: 14,

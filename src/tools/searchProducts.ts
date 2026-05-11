@@ -15,7 +15,6 @@ export type Product = {
 
 export type SearchProductsResult = {
   query: string;
-  source: "carrefour.fr";
   count: number;
   products: Product[];
 };
@@ -341,7 +340,6 @@ export async function searchCarrefourProducts(
 
   return {
     query,
-    source: "carrefour.fr",
     count: products.length,
     products,
   };

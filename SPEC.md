@@ -45,7 +45,6 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - métadonnées de recherche:
     - `query`
     - `count`
-    - `source` (ici `carrefour.fr`)
 - Implémentation:
   - la récupération de la page de recherche se fait via Playwright avec Chromium headless pour limiter les réponses `403`
   - l'extraction des produits se fait depuis le DOM rendu de la liste de résultats

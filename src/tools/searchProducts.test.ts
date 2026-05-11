@@ -46,6 +46,7 @@ test("extractProductsFromRenderedHtml parses DOM product cards", () => {
     {
       name: "Jus de carottes bio",
       url: "https://www.carrefour.fr/p/jus-carottes-bio-123",
+      id: "123",
       price: 3.45,
       currency: "EUR",
       image:

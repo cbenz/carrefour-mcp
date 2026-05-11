@@ -13,7 +13,6 @@ export type ProductNutritionFact = {
 };
 
 export type ProductDetails = {
-  source: "carrefour.fr";
   name: string;
   url: string;
   brand?: string;
@@ -50,12 +49,10 @@ let browserPromise: Promise<Browser> | undefined;
 
 async function getBrowser(): Promise<Browser> {
   if (!browserPromise) {
-    browserPromise = chromium
-      .launch({ headless: true })
-      .catch((error) => {
-        browserPromise = undefined;
-        throw error;
-      });
+    browserPromise = chromium.launch({ headless: true }).catch((error) => {
+      browserPromise = undefined;
+      throw error;
+    });
   }
 
   return browserPromise;
@@ -97,7 +94,9 @@ function parseFrenchDecimal(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function parseDisplayedFrenchNumber(value: string | undefined): number | undefined {
+function parseDisplayedFrenchNumber(
+  value: string | undefined,
+): number | undefined {
   if (!value) {
     return undefined;
   }
@@ -144,14 +143,16 @@ function parseLdJsonProduct(html: string): LdJsonProduct | undefined {
           typeof maybeProduct.name === "string" ? maybeProduct.name : undefined;
         const brand =
           maybeProduct.brand && typeof maybeProduct.brand === "object"
-            ? typeof (maybeProduct.brand as { name?: unknown }).name === "string"
+            ? typeof (maybeProduct.brand as { name?: unknown }).name ===
+              "string"
               ? (maybeProduct.brand as { name?: string }).name
               : undefined
             : undefined;
         const url =
           typeof maybeProduct.url === "string" ? maybeProduct.url : undefined;
         const image =
-          typeof maybeProduct.image === "string" || Array.isArray(maybeProduct.image)
+          typeof maybeProduct.image === "string" ||
+          Array.isArray(maybeProduct.image)
             ? (maybeProduct.image as string | string[])
             : undefined;
 
@@ -311,23 +312,23 @@ function selectReliableUnitPrice(
     return extracted;
   }
 
-  const relativeGap = Math.abs(extracted.value - computed.value) / computed.value;
+  const relativeGap =
+    Math.abs(extracted.value - computed.value) / computed.value;
   return relativeGap > 0.5 ? computed : extracted;
 }
 
 function extractNutriScore($: cheerio.CheerioAPI): string | undefined {
-  const nutriCandidate = $(
-    '[aria-label*="Nutri-Score"], img[alt*="Nutri-Score"], button:contains("Nutri-Score")',
-  )
-    .first()
-    .attr("aria-label")
-    ??
+  const nutriCandidate =
     $(
       '[aria-label*="Nutri-Score"], img[alt*="Nutri-Score"], button:contains("Nutri-Score")',
     )
       .first()
-      .attr("alt")
-    ??
+      .attr("aria-label") ??
+    $(
+      '[aria-label*="Nutri-Score"], img[alt*="Nutri-Score"], button:contains("Nutri-Score")',
+    )
+      .first()
+      .attr("alt") ??
     $(
       '[aria-label*="Nutri-Score"], img[alt*="Nutri-Score"], button:contains("Nutri-Score")',
     )
@@ -342,7 +343,11 @@ function extractNutriScore($: cheerio.CheerioAPI): string | undefined {
   return match?.[1]?.toUpperCase();
 }
 
-function extractSectionText(fullText: string, sectionTitle: RegExp, nextTitle: RegExp): string | undefined {
+function extractSectionText(
+  fullText: string,
+  sectionTitle: RegExp,
+  nextTitle: RegExp,
+): string | undefined {
   const startMatch = fullText.search(sectionTitle);
   if (startMatch < 0) {
     return undefined;
@@ -389,7 +394,11 @@ function extractProductDetailsFromHtml(
   const name = domName || ldProduct?.name || "Unknown product";
 
   const canonicalUrl = normalizeUrl($("link[rel='canonical']").attr("href"));
-  const url = canonicalUrl ?? normalizeUrl(ldProduct?.url) ?? normalizeUrl(fallbackUrl) ?? fallbackUrl;
+  const url =
+    canonicalUrl ??
+    normalizeUrl(ldProduct?.url) ??
+    normalizeUrl(fallbackUrl) ??
+    fallbackUrl;
 
   const normalizedName = name.toLowerCase();
   const images = Array.from(
@@ -425,16 +434,23 @@ function extractProductDetailsFromHtml(
       .find("button")
       .toArray()
       .map((button) => collapseWhitespace($(button).text()))
-      .find((text) => /^\d+(?:[.,]\d+)?\s*(l|ml|kg|g)$/i.test(text))
-    ?? undefined;
+      .find((text) => /^\d+(?:[.,]\d+)?\s*(l|ml|kg|g)$/i.test(text)) ??
+    undefined;
 
   const quantity = quantityFromButtons ?? titleQuantity;
   const domPrice = extractPriceFromDomText(fullText);
   const price = domPrice ?? ldProduct?.offers?.price;
-  const currency = ldProduct?.offers?.priceCurrency ?? (price ? DEFAULT_CURRENCY : undefined);
+  const currency =
+    ldProduct?.offers?.priceCurrency ?? (price ? DEFAULT_CURRENCY : undefined);
   const extractedUnitPrice = extractUnitPrice(fullText);
-  const computedUnitPrice = computeUnitPriceFromPriceAndQuantity(price, quantity);
-  const unitPrice = selectReliableUnitPrice(extractedUnitPrice, computedUnitPrice);
+  const computedUnitPrice = computeUnitPriceFromPriceAndQuantity(
+    price,
+    quantity,
+  );
+  const unitPrice = selectReliableUnitPrice(
+    extractedUnitPrice,
+    computedUnitPrice,
+  );
 
   const ingredients = extractSectionText(
     fullText,
@@ -451,7 +467,6 @@ function extractProductDetailsFromHtml(
   const nutritionFacts = extractNutritionFacts(fullText);
 
   return {
-    source: "carrefour.fr",
     name,
     url,
     brand: ldProduct?.brand,
@@ -466,7 +481,10 @@ function extractProductDetailsFromHtml(
     images:
       images.length > 0
         ? images
-        : (Array.isArray(ldProduct?.image) ? ldProduct.image : [ldProduct?.image])
+        : (Array.isArray(ldProduct?.image)
+            ? ldProduct.image
+            : [ldProduct?.image]
+          )
             .map((image) => normalizeUrl(image))
             .filter((image): image is string => typeof image === "string"),
   };
