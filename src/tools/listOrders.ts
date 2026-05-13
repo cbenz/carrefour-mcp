@@ -1,10 +1,11 @@
+import { readFile } from "node:fs/promises";
 import * as cheerio from "cheerio";
-import { chromium } from "playwright";
-import { createCarrefourContext } from "../auth/session.js";
-import { getSharedBrowser } from "../playwright.js";
+import { chromium, request as playwrightRequest } from "playwright";
+import { buildAuthConfigFromEnv } from "../auth/session.js";
 
-const ORDERS_URL = "https://www.carrefour.fr/mon-compte/mes-achats/en-ligne";
-const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
+const ORDERS_API_URL = "https://www.carrefour.fr/api/user/orders";
+const ORDERS_PAGE_URL =
+  "https://www.carrefour.fr/mon-compte/mes-achats/en-ligne";
 
 export type OrderSummary = {
   id?: string;
@@ -22,6 +23,49 @@ export type ListOrdersResult = {
   orders: OrderSummary[];
 };
 
+type OrdersRange = {
+  startIso: string;
+  endIso: string;
+  startFr: string;
+  endFr: string;
+};
+
+// ─── API response types ────────────────────────────────────────────────────────
+
+type ApiSlot = { dateBegin: string; dateEnd: string } | null;
+
+type ApiOrderItem = {
+  attributes: {
+    orderNumber: string;
+    date: string; // "YYYY-MM-DD HH:MM:SS"
+    totalAmount: number;
+    orderStatus: string;
+    serviceType: string;
+    slot: ApiSlot;
+    isPaidOnSite: boolean;
+    paymentInfos: unknown[];
+  };
+  links: {
+    orderDetailsPage: string;
+    getStatement: string | null;
+  };
+};
+
+type OrdersApiPage = {
+  data: ApiOrderItem[];
+  meta: {
+    scrollPaging?: string;
+    scrollHash?: string;
+  };
+};
+
+type ScrollCursor = {
+  scrollPaging: string;
+  scrollHash: string;
+};
+
+// ─── Shared helpers ────────────────────────────────────────────────────────────
+
 function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -38,6 +82,208 @@ function normalizeUrl(url: string | undefined): string | undefined {
   }
   return `https://www.carrefour.fr/${url}`;
 }
+
+// ─── API mapping ───────────────────────────────────────────────────────────────
+
+function formatApiTimeSlot(slot: ApiSlot): string | undefined {
+  if (!slot?.dateBegin || !slot?.dateEnd) {
+    return undefined;
+  }
+  const beginMatch = slot.dateBegin.match(/(\d{2}):(\d{2}):/);
+  const endMatch = slot.dateEnd.match(/(\d{2}):(\d{2}):/);
+  if (!beginMatch || !endMatch) {
+    return undefined;
+  }
+  return `${beginMatch[1]}h${beginMatch[2]} - ${endMatch[1]}h${endMatch[2]}`;
+}
+
+export function extractOrdersFromApiResponse(
+  items: ApiOrderItem[],
+): OrderSummary[] {
+  return items.map((item) => ({
+    id: item.attributes.orderNumber,
+    date: item.attributes.date.slice(0, 10),
+    total: item.attributes.totalAmount,
+    currency: "EUR",
+    status: item.attributes.orderStatus,
+    timeSlot: formatApiTimeSlot(item.attributes.slot),
+    billed: item.links.getStatement !== null ? true : undefined,
+    detailUrl: normalizeUrl(item.links.orderDetailsPage),
+  }));
+}
+
+// ─── Auth state helpers ────────────────────────────────────────────────────────
+
+type PlaywrightStorageState = {
+  cookies: { name: string; value: string; domain: string }[];
+};
+
+async function readAuthStatePath(): Promise<string> {
+  const config = buildAuthConfigFromEnv();
+  // Verify the file is readable.
+  try {
+    await readFile(config.statePath);
+  } catch {
+    throw new Error(
+      `Carrefour auth state not found at ${config.statePath}. Run auth_login then auth_capture_state first.`,
+    );
+  }
+  return config.statePath;
+}
+
+// ─── API pagination (uses Playwright request context for browser TLS fingerprint) ─
+
+type DateFilter = { startDate?: string; endDate?: string };
+
+async function fetchOrdersApiPage(
+  apiContext: import("playwright").APIRequestContext,
+  dateFilter: DateFilter,
+  cursor?: ScrollCursor,
+): Promise<{ orders: OrderSummary[]; nextCursor: ScrollCursor | undefined }> {
+  const url = new URL(ORDERS_API_URL);
+  url.searchParams.set("page", "1");
+  url.searchParams.set("pageSize", "20");
+  if (cursor) {
+    url.searchParams.set("scrollPaging", cursor.scrollPaging);
+    url.searchParams.set("scrollHash", cursor.scrollHash);
+  }
+  if (dateFilter.startDate) {
+    url.searchParams.set("startDate", dateFilter.startDate);
+  }
+  if (dateFilter.endDate) {
+    url.searchParams.set("endDate", dateFilter.endDate);
+  }
+
+  const response = await apiContext.get(url.toString(), {
+    headers: {
+      Accept: "application/json",
+      Referer: ORDERS_PAGE_URL,
+      Origin: "https://www.carrefour.fr",
+      "X-Requested-With": "XMLHttpRequest",
+    },
+  });
+
+  if (response.status() === 401 || response.status() === 403) {
+    throw new Error(
+      `Carrefour API returned ${response.status()}. The session may be expired; run auth_login then auth_capture_state again.`,
+    );
+  }
+
+  if (!response.ok()) {
+    throw new Error(
+      `Carrefour API returned unexpected status ${response.status()}.`,
+    );
+  }
+
+  const json = (await response.json()) as OrdersApiPage;
+  const nextScrollPaging = json.meta?.scrollPaging;
+  const nextScrollHash = json.meta?.scrollHash;
+  return {
+    orders: extractOrdersFromApiResponse(json.data ?? []),
+    nextCursor:
+      nextScrollPaging && nextScrollHash
+        ? { scrollPaging: nextScrollPaging, scrollHash: nextScrollHash }
+        : undefined,
+  };
+}
+
+async function fetchAllOrdersViaApi(
+  apiContext: import("playwright").APIRequestContext,
+  limit: number | undefined,
+  dateFilter: DateFilter,
+): Promise<OrderSummary[]> {
+  const allOrders: OrderSummary[] = [];
+  const seenOrderKeys = new Set<string>();
+  const seenPageSignatures = new Set<string>();
+  let cursor: ScrollCursor | undefined = undefined;
+
+  while (limit === undefined || allOrders.length < limit) {
+    const { orders, nextCursor } = await fetchOrdersApiPage(
+      apiContext,
+      dateFilter,
+      cursor,
+    );
+
+    const signature = orders
+      .map((order) => order.id ?? order.detailUrl ?? "")
+      .join("|");
+    if (signature && seenPageSignatures.has(signature)) {
+      break;
+    }
+    if (signature) {
+      seenPageSignatures.add(signature);
+    }
+
+    let added = 0;
+    for (const order of orders) {
+      const key = order.id ?? order.detailUrl;
+      if (!key) {
+        allOrders.push(order);
+        added += 1;
+        continue;
+      }
+      if (seenOrderKeys.has(key)) {
+        continue;
+      }
+      seenOrderKeys.add(key);
+      allOrders.push(order);
+      added += 1;
+    }
+
+    if (orders.length === 0) {
+      break;
+    }
+    if (!nextCursor || added === 0) {
+      break;
+    }
+    cursor = nextCursor;
+  }
+
+  if (limit === undefined) {
+    return allOrders;
+  }
+
+  return allOrders.slice(0, limit);
+}
+
+async function fetchOrdersFromAuthState(
+  limit: number | undefined,
+  dateFilter: DateFilter,
+): Promise<OrderSummary[]> {
+  const statePath = await readAuthStatePath();
+  const apiContext = await playwrightRequest.newContext({
+    storageState: statePath,
+    baseURL: "https://www.carrefour.fr",
+  });
+  try {
+    return await fetchAllOrdersViaApi(apiContext, limit, dateFilter);
+  } finally {
+    await apiContext.dispose();
+  }
+}
+
+async function fetchOrdersFromCdp(
+  cdpUrl: string,
+  limit: number | undefined,
+  dateFilter: DateFilter,
+): Promise<OrderSummary[]> {
+  const browser = await chromium.connectOverCDP(cdpUrl);
+  try {
+    const context = browser.contexts()[0];
+    if (!context) {
+      throw new Error(
+        "No browser context found on CDP target. Open a normal browsing window first.",
+      );
+    }
+    // Use the live browser context's request so cookies are already attached.
+    const apiContext = context.request;
+    return await fetchAllOrdersViaApi(apiContext, limit, dateFilter);
+  } finally {
+    await browser.close().catch(() => undefined);
+  }
+}
+
+// ─── HTML parsing helpers (kept for __testing exports) ────────────────────────
 
 function parseOrderTotal(text: string): number | undefined {
   const matches = Array.from(text.matchAll(/(\d+(?:[.,]\d{2})?)\s*€/gi));
@@ -207,7 +453,7 @@ function extractOrdersFromDashboardText(html: string): OrderSummary[] {
   const section = sectionMatch[1];
   const orders: OrderSummary[] = [];
   const pattern =
-    /(\d{2}\/\d{2}\/\d{4})\s*-\s*([A-Za-zÀ-ÿ0-9'’ -]{3,100}?)\s*(\d{1,5},\d{2})\s*€/g;
+    /(\d{2}\/\d{2}\/\d{4})\s*-\s*([A-Za-zÀ-ÿ0-9'' -]{3,100}?)\s*(\d{1,5},\d{2})\s*€/g;
 
   for (const match of section.matchAll(pattern)) {
     const total = Number.parseFloat(match[3].replace(",", "."));
@@ -290,92 +536,34 @@ function hasNoOrdersMarker(html: string): boolean {
   );
 }
 
-function validateOrdersHtml(html: string): void {
-  if (isCloudflareChallengeHtml(html)) {
-    throw new Error(
-      "Cloudflare challenge detected while reading orders. Use an authenticated Chrome session and run list_orders with --cdp-url, for example: list_orders --cdp-url http://127.0.0.1:9222.",
-    );
-  }
-
-  const orders = extractOrdersFromHtml(html);
-  if (orders.length === 0 && !hasNoOrdersMarker(html)) {
-    throw new Error(
-      "Unable to locate Carrefour orders page content. The session may be expired.",
-    );
-  }
-}
-
-async function openOrdersPageHtml(): Promise<string> {
-  const browser = await getSharedBrowser();
-  const context = await createCarrefourContext(browser, {
-    useAuth: true,
-    requireAuth: true,
+function sortOrdersByDateDesc(orders: OrderSummary[]): OrderSummary[] {
+  return [...orders].sort((a, b) => {
+    if (a.date && b.date) {
+      return b.date.localeCompare(a.date);
+    }
+    if (a.date) {
+      return -1;
+    }
+    if (b.date) {
+      return 1;
+    }
+    return 0;
   });
-
-  try {
-    const page = await context.newPage();
-    const response = await page.goto(ORDERS_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    });
-
-    if (!response) {
-      throw new Error("Carrefour orders page did not return a response.");
-    }
-
-    await page
-      .waitForLoadState("networkidle", { timeout: 7000 })
-      .catch(() => undefined);
-
-    const html = await page.content();
-    validateOrdersHtml(html);
-    return html;
-  } finally {
-    await context.close();
-  }
 }
 
-async function openOrdersPageHtmlFromCdp(cdpUrl: string): Promise<string> {
-  const browser = await chromium.connectOverCDP(cdpUrl);
-
-  try {
-    const context = browser.contexts()[0];
-    if (!context) {
-      throw new Error(
-        "No browser context found on CDP target. Open a normal browsing window first.",
-      );
-    }
-
-    const page = context.pages()[0] ?? (await context.newPage());
-    const response = await page.goto(ORDERS_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    });
-
-    if (!response) {
-      throw new Error("Carrefour orders page did not return a response.");
-    }
-
-    await page
-      .waitForLoadState("networkidle", { timeout: 7000 })
-      .catch(() => undefined);
-
-    const html = await page.content();
-    validateOrdersHtml(html);
-    return html;
-  } finally {
-    await browser.close().catch(() => undefined);
-  }
-}
+// ─── Public API ────────────────────────────────────────────────────────────────
 
 export async function listCarrefourOrders(
-  limit = 20,
+  limit?: number,
   cdpUrl?: string,
+  startDate?: string,
+  endDate?: string,
 ): Promise<ListOrdersResult> {
-  const html = cdpUrl
-    ? await openOrdersPageHtmlFromCdp(cdpUrl)
-    : await openOrdersPageHtml();
-  const orders = extractOrdersFromHtml(html).slice(0, limit);
+  const dateFilter: DateFilter = { startDate, endDate };
+  const fetchedOrders = cdpUrl
+    ? await fetchOrdersFromCdp(cdpUrl, limit, dateFilter)
+    : await fetchOrdersFromAuthState(limit, dateFilter);
+  const orders = sortOrdersByDateDesc(fetchedOrders);
   return {
     count: orders.length,
     orders,
@@ -383,11 +571,12 @@ export async function listCarrefourOrders(
 }
 
 export const __testing = {
-  DEFAULT_CDP_URL,
+  extractOrdersFromApiResponse,
   extractOrdersFromHtml,
   extractOrdersFromDashboardText,
   hasNoOrdersMarker,
   isCloudflareChallengeHtml,
   parseBilledFlag,
   parseOrderTimeSlot,
+  sortOrdersByDateDesc,
 };

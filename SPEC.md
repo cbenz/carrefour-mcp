@@ -22,7 +22,10 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - `MCP_TRANSPORT=both` pour lancer les deux
 - Le projet expose aussi un lanceur CLI `carrefour-mcp`.
 - Le CLI supporte des sous-commandes alignées sur les outils MCP via une librairie CLI standard.
-- Le CLI écrit sur `stdout` les données brutes JSON du tool appelé.
+- La syntaxe documentée et supportée pour l'exécution via script package manager est `pnpm cli <commande>` sans séparateur `--`.
+- Pour un usage pipeable (stdout JSON uniquement), la syntaxe recommandée est `pnpm --silent cli <commande>`.
+- Le CLI écrit sur `stdout` les données brutes JSON du tool appelé; les messages non-JSON doivent rester sur `stderr`.
+- Si le consommateur du pipe ferme `stdout` prématurément (erreur `EPIPE`, ex. avec `| head`), le CLI doit terminer proprement sans stacktrace.
 - Le projet inclut des tests unitaires pour le parsing DOM des cartes produits et la mise en cache du tool `search_products`.
 - Le projet inclut des tests unitaires pour le parsing des données d'authentification et des commandes.
 
@@ -33,8 +36,8 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 
 ## MCP Tools
 
-- `auth_login`: ouvre un navigateur visible pour une authentification manuelle Carrefour et sauvegarde la session
-- `auth_capture_cdp`: attache une session navigateur déjà authentifiée (CDP) pour sauvegarder la session
+- `auth_capture_state`: attache une session navigateur déjà authentifiée (CDP) pour sauvegarder la session
+- `auth_import_state`: importe un état d'authentification Playwright sérialisé pour un usage distant
 - `auth_status`: vérifie si la session authentifiée locale existe et est encore valide
 - `auth_logout`: supprime la session locale sauvegardée
 - `list_orders`: récupère l'historique des commandes du compte authentifié
@@ -42,18 +45,27 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 - `search_products`: exécute une requête de recherche full-text et retourne une liste de produits correspondants
 - `get_product_details`: récupère les détails d'une fiche produit Carrefour à partir de son URL ou de son identifiant produit
 
-### `auth_login`
+## CLI Commands (local only)
 
-- Input:
-  - `timeoutMs` (number, optionnel)
-- Output:
-  - `authenticated` (boolean)
-  - `statePath` (string)
-  - `message` (string)
-- Implémentation:
-  - ouvre un navigateur non-headless avec profil local persistant
-  - l'utilisateur se connecte manuellement sur Carrefour
-  - la session Playwright (`storageState`) est sauvegardée dans un fichier local
+- `auth_login`: lance Google Chrome automatiquement avec remote debugging pour une authentification manuelle
+- `auth_capture_state`: capture la session depuis Chrome via CDP
+- `auth_upload`: envoie la session authentifiée à un serveur MCP distant non local
+- `auth_status`: vérifie l'état de la session locale
+- `auth_logout`: supprime la session locale
+- `list_orders`: récupère l'historique des commandes
+- `get_order_details`: récupère les détails d'une commande
+- `search_products`: recherche des produits
+- `get_product_details`: récupère les détails d'un produit
+
+### CLI: `auth_login`
+
+- Lance automatiquement Google Chrome avec remote debugging activé:
+  - `--remote-debugging-port=<port dérivé du cdp-url>`
+  - `--user-data-dir=<profil manuel local>`
+  - URL initiale `https://www.carrefour.fr/mon-compte`
+- Le CLI affiche la commande exacte utilisée pour aider au diagnostic et le fichier `cdpUrl`
+- L'utilisateur doit manuellement compléter le login et les challenges Cloudflare dans le navigateur
+- Le CLI ne capture PAS la session: la capture se fait ensuite via `auth_capture_state` ou `auth_capture_state --cleanup-profile`
 
 ### `auth_status`
 
@@ -65,10 +77,12 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - `updatedAt` (string, optionnel)
   - `reason` (string, optionnel)
 
-### `auth_capture_cdp`
+### `auth_capture_state`
 
 - Input:
   - `cdpUrl` (string URL, optionnel, défaut: `http://127.0.0.1:9222`)
+  - `cleanupProfile` (boolean, optionnel, défaut: `true`, CLI uniquement)
+  - `profileDir` (string, optionnel, chemin du profil manuel à nettoyer, CLI uniquement)
 - Output:
   - `authenticated` (boolean)
   - `statePath` (string)
@@ -77,6 +91,40 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - se connecte en CDP à un navigateur déjà ouvert
   - vérifie l'état authentifié Carrefour
   - sauvegarde la session Playwright (`storageState`) localement
+  - en mode CLI, peut supprimer le répertoire de profil manuel après capture réussie (`cleanupProfile=true`)
+
+### `auth_import_state`
+
+- Input:
+  - `storageState` (object, requis, format Playwright `storageState`)
+  - `destinationPath` (string, optionnel, chemin destination du fichier ; utilise `CARREFOUR_AUTH_STATE_PATH` si non fourni)
+- Output:
+  - `imported` (boolean)
+  - `statePath` (string, chemin où l'état a été sauvegardé)
+  - `updatedAt` (string ISO 8601)
+  - `message` (string)
+- Implémentation:
+  - valide le payload minimal (`cookies` array et `origins` array)
+  - écrit l'état importé à `destinationPath` ou `CARREFOUR_AUTH_STATE_PATH` par défaut
+  - applique les permissions de fichier restreintes (0o600)
+- Note: Le paramètre `destinationPath` peut être utilisé pour éviter de surcharger le fichier local lors d'un import depuis un serveur MCP sur la même machine
+
+### CLI: `auth_upload`
+
+- Input:
+  - `serverUrl` (string URL, requis, endpoint MCP HTTP distant)
+  - `statePath` (string, optionnel, chemin du fichier `storageState` local à envoyer)
+  - `destinationPath` (string, optionnel, chemin de destination sur le serveur distant)
+- Output:
+  - `uploaded` (boolean)
+  - `serverUrl` (string)
+  - `sourceStatePath` (string)
+  - `importResult` (object)
+- Implémentation:
+  - lit le fichier `storageState` local puis appelle le tool MCP `auth_import_state` sur `serverUrl`
+  - refuse les destinations loopback ou locales (`localhost`, `127.0.0.1`, `::1`)
+  - n'utilise aucune valeur par défaut pointant vers un serveur local
+- Note: pour un serveur exécuté sur la même machine, l'import via `auth_upload` n'est pas supporté; il faut utiliser directement le fichier local ou appeler `auth_import_state` explicitement avec un chemin de destination dédié
 
 ### `auth_logout`
 
@@ -89,11 +137,13 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 ### `list_orders`
 
 - Input:
-  - `limit` (number, optionnel, défaut: 20, max: 100)
+  - `limit` (number, optionnel, max: 100 ; si omis, retourne toutes les commandes disponibles)
   - `cdpUrl` (string URL, optionnel, ex: `http://127.0.0.1:9222`)
+  - `startDate` (string ISO 8601, optionnel, ex: `2024-01-01T00:00:00.000Z` pour filtrer à partir de cette date)
+  - `endDate` (string ISO 8601, optionnel, ex: `2024-12-31T23:59:59.999Z` pour filtrer jusqu'à cette date)
 - Output:
   - liste de commandes avec au minimum:
-    - `id` (numéro de commande extrait de l'URL ou du texte)
+    - `id` (numéro de commande)
     - `date` (quand disponible, format ISO `YYYY-MM-DD`)
     - `total` (quand disponible)
     - `currency` (quand disponible)
@@ -101,11 +151,26 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
     - `timeSlot` (quand disponible, ex: `09h00 - 11h00`)
     - `billed` (quand disponible, booléen)
     - `detailUrl` (quand disponible)
+  - ordre de tri: commandes triées par date décroissante (plus récente vers plus ancienne)
 - Implémentation:
-  - utilise la session authentifiée sauvegardée
-  - charge la page d'historique des commandes via Playwright depuis l'URL canonique `https://www.carrefour.fr/mon-compte/mes-achats/en-ligne`
-  - supporte un mode d'attache CDP à un navigateur déjà authentifié
-  - extrait les commandes depuis le DOM rendu
+  - utilise l'API interne `https://www.carrefour.fr/api/user/orders` avec les cookies de la session authentifiée
+  - en mode auth state : lit les cookies depuis le fichier `storageState` Playwright sauvegardé localement
+  - en mode CDP : se connecte au navigateur via CDP, extrait les cookies Carrefour, puis appelle l'API HTTP
+  - pagination par curseur : première requête sur `page=1&pageSize=20`, puis requêtes suivantes avec `scrollPaging` et `scrollHash` retournés dans `meta`
+  - itère jusqu'à obtenir `limit` commandes si `limit` est fourni, sinon jusqu'à épuisement du curseur
+  - résilience pagination: si l'API Carrefour renvoie un `400` pendant une page suivante (après au moins une page valide), le tool retourne les commandes déjà collectées au lieu d'échouer
+  - si un `400` survient dès la première page, le tool renvoie une erreur explicite
+  - protection anti-boucle : arrête la pagination si une page duplique exactement la précédente ou si aucune nouvelle commande n'est ajoutée
+  - headers requis : `Cookie`, `Accept: application/json`, `Referer`, `Origin`, `X-Requested-With: XMLHttpRequest`
+  - mapping des champs API :
+    - `id` ← `attributes.orderNumber`
+    - `date` ← 10 premiers caractères de `attributes.date` (format `YYYY-MM-DD`)
+    - `total` ← `attributes.totalAmount`
+    - `status` ← `attributes.orderStatus`
+    - `timeSlot` ← dérivé de `attributes.slot.dateBegin` / `slot.dateEnd` (format `HHhMM - HHhMM`)
+    - `billed` ← `links.getStatement !== null`
+    - `detailUrl` ← URL absolue dérivée de `links.orderDetailsPage`
+  - tri final : toutes les commandes agrégées sont triées par `date` décroissante; les commandes sans date sont placées en fin de liste
 
 ### `get_order_details`
 
@@ -126,9 +191,10 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - `reorderUrl` (string, optionnel)
   - `refundUrl` (string, optionnel)
   - `unavailableProductsCount` (number, optionnel)
-  - `products` (array, optionnel)
+  - `products` (array, optionnel, triée par `productId` ordre numérique croissant)
     - `name` (string, requis)
     - `productId` (string, optionnel)
+    - `category` (string, optionnel, nom de la catégorie de rayon)
     - `unavailable` (boolean, requis)
     - `quantity` (number, optionnel)
     - `packaging` (string, optionnel)
@@ -137,41 +203,93 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
     - `currency` (string, optionnel)
     - `url` (string, optionnel)
 - Implémentation:
-  - charge la page de détail commande `https://www.carrefour.fr/mon-compte/mes-achats/en-ligne/<id>`
-  - supporte un mode d'attache CDP à un navigateur déjà authentifié
-  - extrait les métadonnées clés de la commande depuis le DOM rendu
-  - extrait aussi les lignes produits (incluant les produits indisponibles)
-  - ignore les libellés de catégories de rayons (ex: `Conserves et bocaux`)
+  - utilise l'API interne `https://www.carrefour.fr/api/user/orders/{orderNumber}` avec les cookies de la session authentifiée
+  - en mode auth state : lit les cookies depuis le fichier `storageState` Playwright sauvegardé localement
+  - en mode CDP : se connecte au navigateur via CDP et utilise son contexte de requête pour appeler l'API
+  - extrait la commande de la réponse JSON (`attributes`)
+  - extrait les produits depuis `productList.categories[].products[]`
+  - trie les produits par `productId` en ordre numérique croissant
+  - headers requis : `Accept: application/json`, `Referer`, `Origin`, `X-Requested-With: XMLHttpRequest`
+  - mapping des champs API :
+    - `id` ← `attributes.orderNumber`
+    - `orderedAt` ← 10 premiers caractères de `attributes.date` (format `YYYY-MM-DD`)
+    - `billed` ← `true` si `attributes.isPaidOnSite === false`, sinon `undefined`
+    - `deliverySlot` ← dérivé de `attributes.slot.dateBegin` / `slot.dateEnd` (format `HHhMM - HHhMM`)
+    - `total` ← `attributes.totalAmount`
+    - `invoiceUrl` ← URL absolue dérivée de `links.getStatement`
+    - `refundUrl` ← URL absolue dérivée de `links.refundPage`
+    - **Produits** :
+      - `name` ← `attributes.title` du produit
+      - `productId` ← `attributes.ean` du produit
+      - `totalPrice` ← prix livré depuis `offers[ean][storeId].attributes.price.totalPrice.delivered`
+      - `unitPrice` ← prix unitaire depuis `offers[ean][storeId].attributes.price.price`
+      - `url` ← URL absolue construite depuis le `slug` et l'`ean` du produit
 
-### Spécification de parsing `list_orders`
+### Spécification de mapping `get_order_details`
 
-- La source primaire des commandes est la liste d'éléments de la page `mes-achats/en-ligne`.
-- Chaque entrée de commande est attendue dans une structure de type `list`/`listitem` contenant au minimum:
-  - une date de commande (ex: `28/04/26`)
-  - un identifiant visible `N° <id>`
-  - un montant (ex: `176,07€`)
-  - un texte de livraison contenant le créneau horaire (ex: `09h00 - 11h00`)
-  - un libellé de facturation (ex: `Facturée`)
-  - un lien d'action `commander/<id>` et/ou un lien de détail de commande
-- Règles d'extraction:
-  - `id`: priorité au lien `.../commander/<id>`, fallback sur `N° <id>`
-  - `date`: conversion obligatoire en ISO `YYYY-MM-DD`
-  - `timeSlot`: extraction du motif `HHhMM - HHhMM`
-  - `billed`: `true` si le libellé `Facturée` est présent, `false` si `Non facturée`, sinon `undefined`
-  - `detailUrl`: URL absolue Carrefour
+- Source : réponse JSON de `GET /api/user/orders/{orderNumber}`
+- Structure de réponse :
+  - `attributes` : métadonnées de la commande
+  - `attributes.productList.categories[]` : array de catégories de produits
+  - `attributes.productList.categories[].products[]` : array de produits par catégorie
+  - `links` : liens relatifs (facture, remboursement, etc.)
+- Règles de mapping :
+  - `id` : `attributes.orderNumber`
+  - `orderedAt` : sous-chaîne `[0..9]` de `attributes.date` (`YYYY-MM-DD HH:MM:SS` → `YYYY-MM-DD`)
+  - `deliverySlot` : extraction du motif `HHhMM - HHhMM` depuis `slot.dateBegin` et `slot.dateEnd`
+  - `billed` : `true` si `attributes.isPaidOnSite === false`, sinon `undefined`
+  - `invoiceUrl` : URL absolue dérivée de `links.getStatement`
+  - `refundUrl` : URL absolue dérivée de `links.refundPage`
+  - **Produits** (triés par `productId` ordre numérique croissant) :
+    - `name` : `attributes.title`
+    - `productId` : `attributes.ean`      - `category` : `name` de la catégorie parente    - `totalPrice` : `offers[ean][storeId].attributes.price.totalPrice.delivered`
+    - `unitPrice` : `offers[ean][storeId].attributes.price.price`
+    - `url` : URL absolue construite depuis `slug` et `ean` (format: `/p/{slug}-{ean}`)
+
+### Exigences de tests unitaires `get_order_details`
+
+- Test `extractOrderDetailsFromApi` avec une fixture JSON réaliste reflétant la structure réelle de l'API :
+  - `attributes.orderNumber`, `attributes.date` (format `YYYY-MM-DD HH:MM:SS`), `attributes.totalAmount`
+  - `attributes.slot.dateBegin` / `slot.dateEnd` (format `YYYY-MM-DD HH:MM:SS`)
+  - `attributes.productList.categories[].products[]` avec structure complète d'offers imbriquées
+  - `links.getStatement`, `links.refundPage`
+- Les assertions doivent vérifier explicitement :
+  - format ISO de la date (`YYYY-MM-DD`)
+  - extraction correcte de l'`id` depuis `orderNumber`
+  - extraction du `deliverySlot` (format `HHhMM - HHhMM`)
+  - extraction du flag `billed`
+  - extraction correcte des produits avec `name`, `productId`, `category`, `totalPrice`, `unitPrice`
+  - tri des produits par `productId` ordre numérique croissant
+  - extraction de l'`url` produit depuis le `slug`
+- Conserver les tests existants de parsing HTML (`extractOrderDetailsFromHtml`, etc.) pour la rétrocompatibilité
+
+### Spécification de mapping `list_orders`
+
+- Source : réponse JSON de `GET /api/user/orders?page=1&pageSize=20[&scrollPaging=<cursor>&scrollHash=<hash>]`
+- Structure de réponse :
+  - `data[]` : array de commandes
+  - `meta.scrollPaging` : curseur de pagination pour la page suivante
+  - `meta.scrollHash` : hash de pagination associé au curseur
+- Règles de mapping par commande :
+  - `id` : `attributes.orderNumber`
+  - `date` : sous-chaîne `[0..9]` de `attributes.date` (`YYYY-MM-DD HH:MM:SS` → `YYYY-MM-DD`)
+  - `timeSlot` : extraction du motif `HHhMM - HHhMM` depuis `slot.dateBegin` et `slot.dateEnd`
+  - `billed` : `true` si `links.getStatement` est non-null, sinon `undefined`
+  - `detailUrl` : URL absolue Carrefour construite depuis `links.orderDetailsPage`
 
 ### Exigences de tests unitaires `list_orders`
 
-- Les fixtures doivent refléter la structure réelle observée dans le DOM Carrefour de `mes-achats/en-ligne`, notamment:
-  - conteneur de liste (`list`/`listitem` ou équivalent HTML)
-  - sous-blocs distincts date / livraison / montant / actions
-  - liens réalistes (`/mon-compte/mes-achats/en-ligne/<id>`, `/commander/<id>`, `/facture/<id>`)
-- Les assertions doivent vérifier explicitement:
-  - format ISO de la date
+- Test `extractOrdersFromApiResponse` avec une fixture JSON réaliste reflétant la structure réelle de l'API :
+  - `attributes.orderNumber`, `attributes.date` (format `YYYY-MM-DD HH:MM:SS`), `attributes.totalAmount`
+  - `attributes.slot.dateBegin` / `slot.dateEnd` (format `YYYY-MM-DD HH:MM:SS`)
+  - `links.orderDetailsPage`, `links.getStatement`
+- Les assertions doivent vérifier explicitement :
+  - format ISO de la date (`YYYY-MM-DD`)
   - extraction correcte de l'`id`
-  - extraction du `timeSlot`
+  - extraction du `timeSlot` (format `HHhMM - HHhMM`)
   - extraction du flag `billed`
   - extraction du montant numérique
+- Conserver les tests existants de parsing HTML (`extractOrdersFromHtml`, etc.) pour la rétrocompatibilité
 
 ### `search_products`
 
@@ -203,16 +321,26 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - `carrefour-mcp search_products "jus de carottes"`
 - Commande:
   - `carrefour-mcp auth_login`
-  - `carrefour-mcp auth_capture_cdp`
+  - `carrefour-mcp auth_capture_state`
+  - `carrefour-mcp auth_upload`
   - `carrefour-mcp auth_status`
   - `carrefour-mcp auth_logout`
   - `carrefour-mcp list_orders`
   - `carrefour-mcp get_order_details`
 - Options supportées:
   - `--limit <number>` pour limiter le nombre de produits retournés
-  - `auth_login --timeout-ms <number>` pour configurer le timeout de connexion
+  - `auth_login --timeout-ms <number>` option conservée pour compatibilité (sans effet)
+  - `auth_login --cdp-url <url>` pour choisir le endpoint CDP visé ensuite
+  - `auth_login --profile-dir <path>` pour choisir le répertoire de profil manuel Chrome
+  - `auth_login --chrome-bin <path|name>` pour choisir le binaire Chrome à lancer
+  - `auth_capture_state --cleanup-profile` pour nettoyer le profil manuel après capture réussie
+  - `auth_capture_state --profile-dir <path>` pour choisir le répertoire de profil à nettoyer
+  - `auth_upload --server-url <url>` pour choisir l'endpoint MCP HTTP distant (défaut: `http://127.0.0.1:3000/mcp`)
+  - `auth_upload --state-path <path>` pour choisir le fichier `storageState` local à envoyer
   - `list_orders --limit <number>` pour limiter le nombre de commandes retournées
   - `list_orders --cdp-url <url>` pour lire les commandes via une session navigateur déjà ouverte
+  - `list_orders --start-date <iso>` pour filtrer les commandes à partir de cette date (format ISO 8601)
+  - `list_orders --end-date <iso>` pour filtrer les commandes jusqu'à cette date (format ISO 8601)
   - `get_order_details <orderRef>` pour récupérer le détail d'une commande
   - `get_order_details --cdp-url <url>` pour lire le détail commande via une session navigateur déjà ouverte
 - Sortie:
@@ -254,6 +382,9 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - `CARREFOUR_AUTH_BROWSER_PROFILE_DIR` (défaut: `~/.cache/carrefour-mcp/chromium-profile`)
   - `CARREFOUR_AUTH_BROWSER_CHANNEL` (optionnel: `chromium`, `chrome`, `msedge`)
   - `CARREFOUR_AUTH_LOGIN_TIMEOUT_MS` (défaut: `180000` ms)
+  - `CARREFOUR_AUTH_MANUAL_PROFILE_DIR` (défaut: `~/.cache/carrefour-mcp/manual-chrome`)
+  - `CARREFOUR_AUTH_CDP_URL` (défaut: `http://127.0.0.1:9222`)
+  - `CARREFOUR_AUTH_CHROME_BIN` (défaut: `google-chrome`)
 - Cache de recherche:
   - `CARREFOUR_SEARCH_CACHE_ENABLED` (défaut: `true`)
   - `CARREFOUR_SEARCH_CACHE_DIR` (défaut: `.cache/carrefour-mcp`)

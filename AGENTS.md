@@ -8,6 +8,8 @@
 
 - tu dois t'exprimer en français dans la session de chat
 - si tu dois poser une question à l'utilisateur, utilise #tool:vscode/askQuestions
+- avant toute modification de code, lis le skill `spec-driven-dev` et mets à jour `SPEC.md` en premier
+- avant toute modification de code impliquant une librairie externe, utilise le MCP context7 pour trouver sa documentation
 
 ## Règles de projet
 

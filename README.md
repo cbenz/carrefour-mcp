@@ -6,8 +6,8 @@ carrefour-mcp lets you search products on Carrefour France and get structured re
 
 - MCP tool available: search_products
 - MCP tool available: get_product_details
-- MCP tool available: auth_login
-- MCP tool available: auth_capture_cdp
+- MCP tool available: auth_capture_state
+- MCP tool available: auth_import_state
 - MCP tool available: auth_status
 - MCP tool available: auth_logout
 - MCP tool available: list_orders
@@ -15,12 +15,79 @@ carrefour-mcp lets you search products on Carrefour France and get structured re
 - CLI command available: carrefour-mcp search_products
 - CLI command available: carrefour-mcp get_product_details
 - CLI command available: carrefour-mcp auth_login
-- CLI command available: carrefour-mcp auth_capture_cdp
+- CLI command available: carrefour-mcp auth_capture_state
+- CLI command available: carrefour-mcp auth_upload
 - CLI command available: carrefour-mcp auth_status
 - CLI command available: carrefour-mcp auth_logout
 - CLI command available: carrefour-mcp list_orders
 - CLI command available: carrefour-mcp get_order_details
 - Supported server modes: stdio, http, or both
+
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "Local Development"
+        CLI["Local CLI"]
+        CHROME["Chrome/Chromium<br/>with CDP :9222"]
+        STORAGE["Local Storage<br/>storageState"]
+    end
+
+    subgraph "carrefour-mcp Server"
+        MCP["MCP Server"]
+        STDIO["Stdio Transport"]
+        HTTP["HTTP Transport"]
+        MCP --> STDIO
+        MCP --> HTTP
+    end
+
+    subgraph "Tools"
+        AUTH["Authentication Tools"]
+        SEARCH["Search Products"]
+        PRODUCT["Get Product Details"]
+        ORDERS["List/Get Orders"]
+    end
+
+    subgraph "Internals"
+        PW["Playwright<br/>Chromium"]
+        SESSION["Session State<br/>storageState"]
+        CACHE["Cache"]
+    end
+
+    subgraph "External"
+        CARREFOUR["Carrefour.fr"]
+    end
+
+    subgraph "Auth State Upload Flow"
+        CLI -->|"1. auth_capture_state"| AUTH
+        CHROME -->|"2. CDP connection"| AUTH
+        AUTH -->|"3. Get storageState"| CHROME
+        AUTH -->|"4. Save locally"| STORAGE
+        CLI -->|"5. auth_upload<br/>--server-url"| HTTP
+        HTTP -->|"6. POST auth_import_state"| AUTH
+        AUTH -->|"7. Save state"| SESSION
+    end
+
+    MCP --> AUTH
+    MCP --> SEARCH
+    MCP --> PRODUCT
+    MCP --> ORDERS
+
+    AUTH --> PW
+    SEARCH --> CACHE
+    SEARCH --> PW
+    PRODUCT --> PW
+    ORDERS --> PW
+
+    PW --> CARREFOUR
+
+    subgraph "Remote Clients"
+        REMOTECLI["Remote Tools<br/>via HTTP"]
+    end
+
+    HTTP --> REMOTECLI
+    REMOTECLI --> PW
+```
 
 ## Prerequisites
 
@@ -69,18 +136,21 @@ MCP_TRANSPORT=http pnpm start
 Run directly from source (no rebuild required):
 
 ```bash
-pnpm cli -- search_products "jus de carottes"
-pnpm cli -- search_products "jus de carottes" --limit 5
-pnpm cli -- get_product_details "3608580823445"
-pnpm cli -- get_product_details "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379"
-pnpm cli -- auth_login
-pnpm cli -- auth_capture_cdp
-pnpm cli -- auth_status
-pnpm cli -- list_orders --limit 10
-pnpm cli -- list_orders --limit 10 --cdp-url http://127.0.0.1:9222
-pnpm cli -- get_order_details 649654675
-pnpm cli -- get_order_details 649654675 --cdp-url http://127.0.0.1:9222
-pnpm cli -- auth_logout
+pnpm --silent cli search_products "jus de carottes"
+pnpm --silent cli search_products "jus de carottes" --limit 5
+pnpm --silent cli get_product_details "3608580823445"
+pnpm --silent cli get_product_details "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379"
+pnpm --silent cli auth_login
+pnpm --silent cli auth_capture_state
+pnpm --silent cli auth_capture_state --cleanup-profile
+pnpm --silent cli auth_upload --server-url https://carrefour-mcp.coursicota.com/mcp
+pnpm --silent cli auth_status
+pnpm --silent cli list_orders --limit 10
+pnpm --silent cli list_orders --limit 10 --cdp-url http://127.0.0.1:9222
+pnpm --silent cli list_orders --limit 20 --start-date 2024-01-01T00:00:00.000Z --end-date 2024-12-31T23:59:59.999Z
+pnpm --silent cli get_order_details 649654675
+pnpm --silent cli get_order_details 649654675 --cdp-url http://127.0.0.1:9222
+pnpm --silent cli auth_logout
 ```
 
 Use the installed binary command:
@@ -93,7 +163,9 @@ carrefour-mcp search_products "jus de carottes" --limit 5
 carrefour-mcp get_product_details "3608580823445"
 carrefour-mcp get_product_details "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379"
 carrefour-mcp auth_login
-carrefour-mcp auth_capture_cdp
+carrefour-mcp auth_capture_state
+carrefour-mcp auth_capture_state --cleanup-profile
+carrefour-mcp auth_upload --server-url https://carrefour-mcp.coursicota.com/mcp
 carrefour-mcp auth_status
 carrefour-mcp list_orders --limit 10
 carrefour-mcp list_orders --limit 10 --cdp-url http://127.0.0.1:9222
@@ -105,33 +177,66 @@ carrefour-mcp auth_logout
 Output format:
 
 - Raw JSON on stdout
+- For script invocation, use `pnpm --silent cli ...` to keep stdout JSON-only and pipeable.
 
 ## Authenticate Your Carrefour Session
 
 To access account-only features such as order history:
 
-1. Run `auth_login`.
-2. Complete login manually in the opened browser window.
-3. The browser runs with a persistent local profile (not a temporary guest-like profile).
-4. The session state is saved locally and reused by authenticated tools.
+1. Run `auth_login` to start Chrome with remote debugging and a dedicated manual profile:
+
+```bash
+pnpm --silent cli auth_login
+```
+
+`auth_login` also prints the exact `google-chrome` command used.
+
+1. In that Chrome window, log in to Carrefour and validate the human check manually.
+
+2. Capture the authenticated session state:
+
+```bash
+pnpm --silent cli auth_capture_state
+```
+
+1. Optional cleanup of the temporary manual Chrome profile after successful capture:
+
+```bash
+pnpm --silent cli auth_capture_state --cleanup-profile
+```
+
+1. The session state is saved locally and reused by authenticated tools.
+
+2. Optional: upload the local state to a remote MCP server:
+
+```bash
+pnpm --silent cli auth_upload --server-url https://carrefour-mcp.coursicota.com/mcp
+```
+
+`auth_upload` refuses local MCP destinations such as `localhost`, `127.0.0.1`, and `::1`.
+If the MCP server runs on the same machine, keep using the local session file directly instead of uploading it back to the same host.
 
 Check status:
 
 ```bash
-pnpm cli -- auth_status
+pnpm --silent cli auth_status
 ```
 
 Clear local session state:
 
 ```bash
-pnpm cli -- auth_logout
+pnpm --silent cli auth_logout
 ```
 
 List order history:
 
 ```bash
-pnpm cli -- list_orders --limit 20
+pnpm --silent cli list_orders
 ```
+
+`list_orders` returns all available orders by default.
+Use `--limit` only if you want to cap the number of returned orders.
+If Carrefour temporarily refuses a later history page, the command still returns the orders already collected.
 
 `list_orders` returns structured order history fields when available:
 
@@ -143,6 +248,14 @@ pnpm cli -- list_orders --limit 20
 - billed flag (`true` when the order is marked as invoiced)
 - order detail URL
 
+Returned orders are sorted by date from newest to oldest.
+
+You can optionally filter orders by date range using `--start-date` and `--end-date` (ISO 8601 format):
+
+```bash
+pnpm --silent cli list_orders --start-date 2024-01-01T00:00:00.000Z --end-date 2024-12-31T23:59:59.999Z
+```
+
 `get_order_details` returns structured fields from a single order detail page:
 
 - order id and URL
@@ -152,19 +265,19 @@ pnpm cli -- list_orders --limit 20
 - order total and currency
 - invoice/reorder/refund URLs when available
 - unavailable products count when available
-- product lines including unavailable products
-- each product line can include name, product ID, packaging, quantity, prices, currency, and product URL
-- category labels (for example `Conserves et bocaux`) are not returned as products
+- product lines including unavailable products sorted by product ID
+- each product line can include name, product ID, category, packaging, quantity, prices, currency, and product URL
+- category labels (for example `Conserves et Bocaux`) are included in each product's `category` field
 
 If Cloudflare challenge pages are returned by automated browsing, reuse your manually authenticated Chrome session with CDP:
 
 ```bash
-pnpm cli -- list_orders --limit 20 --cdp-url http://127.0.0.1:9222
+pnpm --silent cli list_orders --cdp-url http://127.0.0.1:9222
 ```
 
 ### Fallback: Capture Session From Existing Chrome
 
-If `auth_login` fails during Cloudflare checks, you can reuse a browser session that you authenticated manually.
+If you prefer to launch Chrome yourself, you can still run `auth_capture_state` directly.
 
 1. Start Chrome with remote debugging enabled:
 
@@ -177,13 +290,19 @@ google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.cache/carrefo
 2. Capture the authenticated session state:
 
 ```bash
-pnpm cli -- auth_capture_cdp
+pnpm --silent cli auth_capture_state
 ```
 
 Optional custom CDP endpoint:
 
 ```bash
-pnpm cli -- auth_capture_cdp --cdp-url http://127.0.0.1:9222
+pnpm --silent cli auth_capture_state --cdp-url http://127.0.0.1:9222
+```
+
+Optional cleanup with a custom profile path:
+
+```bash
+pnpm --silent cli auth_capture_state --cleanup-profile --profile-dir "$HOME/.cache/carrefour-mcp/manual-chrome"
 ```
 
 `get_product_details` returns detailed product information when available, including:
@@ -221,3 +340,14 @@ You can configure search caching with environment variables:
 - CARREFOUR_AUTH_BROWSER_PROFILE_DIR (default: ~/.cache/carrefour-mcp/chromium-profile)
 - CARREFOUR_AUTH_BROWSER_CHANNEL (optional: chromium, chrome, msedge)
 - CARREFOUR_AUTH_LOGIN_TIMEOUT_MS (default: 180000)
+
+### Multi-Server Setup
+
+Use `auth_upload` only for a genuinely remote MCP server:
+
+```bash
+pnpm --silent cli auth_upload \
+  --server-url https://carrefour-mcp.coursicota.com/mcp
+```
+
+Local MCP destinations such as `localhost`, `127.0.0.1`, and `::1` are rejected by the CLI.

@@ -1,10 +1,66 @@
+import { readFile } from "node:fs/promises";
 import * as cheerio from "cheerio";
-import { chromium } from "playwright";
-import { createCarrefourContext } from "../auth/session.js";
-import { getSharedBrowser } from "../playwright.js";
+import { chromium, request as playwrightRequest } from "playwright";
+import { buildAuthConfigFromEnv } from "../auth/session.js";
 
 const ORDER_DETAILS_BASE_URL =
   "https://www.carrefour.fr/mon-compte/mes-achats/en-ligne";
+const ORDERS_API_URL = "https://www.carrefour.fr/api/user/orders";
+
+// ─── API response types ────────────────────────────────────────────────────────
+
+type ApiOfferPrice = {
+  price?: number;
+  totalPrice?: {
+    delivered?: number;
+    requested?: number;
+  };
+};
+
+type ApiOffer = {
+  attributes?: {
+    price?: ApiOfferPrice;
+  };
+};
+
+type ApiOrderProduct = {
+  attributes: {
+    title: string;
+    brand?: string;
+    ean: string;
+    slug?: string;
+    offers?: Record<string, Record<string, ApiOffer>>;
+  };
+  links?: {
+    self?: string;
+  };
+};
+
+type ApiProductCategory = {
+  name: string;
+  products: ApiOrderProduct[];
+};
+
+type ApiOrderAttributes = {
+  orderNumber: string;
+  date: string; // "YYYY-MM-DD HH:MM:SS"
+  totalAmount: number;
+  orderStatus: string;
+  slot?: { dateBegin: string; dateEnd: string } | null;
+  isPaidOnSite?: boolean;
+  productList?: {
+    categories: ApiProductCategory[];
+  };
+};
+
+type ApiOrderResponse = {
+  attributes: ApiOrderAttributes;
+  links?: {
+    orderDetailsPage?: string;
+    getStatement?: string | null;
+    refundPage?: string;
+  };
+};
 
 export type OrderDetails = {
   id: string;
@@ -26,6 +82,7 @@ export type OrderDetails = {
 export type OrderProduct = {
   name: string;
   productId?: string;
+  category?: string;
   unavailable: boolean;
   quantity?: number;
   packaging?: string;
@@ -39,6 +96,104 @@ function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+// ─── API mapping ───────────────────────────────────────────────────────────────
+
+function formatApiTimeSlot(
+  slot: { dateBegin: string; dateEnd: string } | null | undefined,
+): string | undefined {
+  if (!slot?.dateBegin || !slot?.dateEnd) {
+    return undefined;
+  }
+  const beginMatch = slot.dateBegin.match(/(\d{2}):(\d{2}):/);
+  const endMatch = slot.dateEnd.match(/(\d{2}):(\d{2}):/);
+  if (!beginMatch || !endMatch) {
+    return undefined;
+  }
+  return `${beginMatch[1]}h${beginMatch[2]} - ${endMatch[1]}h${endMatch[2]}`;
+}
+
+function extractOrderDetailsFromApi(
+  apiOrder: ApiOrderResponse,
+  orderDetailsPageUrl: string,
+): OrderDetails {
+  const orderNumber = apiOrder.attributes.orderNumber;
+  const orderedAt = apiOrder.attributes.date.slice(0, 10); // Extract YYYY-MM-DD
+  const total = apiOrder.attributes.totalAmount;
+  const deliverySlot = formatApiTimeSlot(apiOrder.attributes.slot);
+
+  // Extract products from all categories
+  const products: OrderProduct[] = [];
+  const productList = apiOrder.attributes.productList;
+
+  if (productList?.categories) {
+    for (const category of productList.categories) {
+      const categoryName = category.name || undefined;
+      for (const apiProduct of category.products) {
+        const offerData = apiProduct.attributes.offers;
+        let unitPrice: number | undefined;
+        let totalPrice: number | undefined;
+
+        // Extract price from first available offer
+        if (offerData) {
+          for (const eanOffers of Object.values(offerData)) {
+            for (const offer of Object.values(eanOffers)) {
+              const price = offer.attributes?.price;
+              if (price?.totalPrice?.delivered) {
+                totalPrice = price.totalPrice.delivered;
+              }
+              if (price?.price) {
+                unitPrice = price.price;
+              }
+              if (unitPrice || totalPrice) break;
+            }
+            if (unitPrice || totalPrice) break;
+          }
+        }
+
+        const productUrl = apiProduct.attributes.slug
+          ? normalizeUrl(
+              `/p/${apiProduct.attributes.slug}-${apiProduct.attributes.ean}`,
+            )
+          : undefined;
+
+        products.push({
+          name: apiProduct.attributes.title,
+          productId: apiProduct.attributes.ean,
+          category: categoryName,
+          unavailable: false,
+          packaging: undefined,
+          totalPrice,
+          unitPrice,
+          currency: totalPrice || unitPrice ? "EUR" : undefined,
+          url: productUrl,
+        });
+      }
+    }
+  }
+
+  // Sort products by productId (numeric)
+  products.sort((a, b) => {
+    const aId = Number.parseInt(a.productId ?? "0", 10);
+    const bId = Number.parseInt(b.productId ?? "0", 10);
+    return aId - bId;
+  });
+
+  return {
+    id: orderNumber,
+    url: orderDetailsPageUrl,
+    orderedAt,
+    billed: apiOrder.attributes.isPaidOnSite === false ? true : undefined,
+    deliverySlot,
+    total,
+    currency: total !== undefined ? "EUR" : undefined,
+    invoiceUrl: normalizeUrl(apiOrder.links?.getStatement ?? undefined),
+    refundUrl: normalizeUrl(apiOrder.links?.refundPage),
+    products,
+  };
+}
+
+// ─── Shared helpers ────────────────────────────────────────────────────────────
+
 function normalizeUrl(url: string | undefined): string | undefined {
   if (!url) {
     return undefined;
@@ -50,6 +205,106 @@ function normalizeUrl(url: string | undefined): string | undefined {
     return `https://www.carrefour.fr${url}`;
   }
   return `https://www.carrefour.fr/${url}`;
+}
+
+// ─── Auth state helpers ────────────────────────────────────────────────────────
+
+type PlaywrightStorageState = {
+  cookies: { name: string; value: string; domain: string }[];
+};
+
+async function readAuthStatePath(): Promise<string> {
+  const config = buildAuthConfigFromEnv();
+  // Verify the file is readable.
+  try {
+    await readFile(config.statePath);
+  } catch {
+    throw new Error(
+      `Carrefour auth state not found at ${config.statePath}. Run auth_login then auth_capture_state first.`,
+    );
+  }
+  return config.statePath;
+}
+
+// ─── API fetching (uses Playwright request context for browser TLS fingerprint) ─
+
+async function fetchOrderDetailsFromApi(
+  apiContext: import("playwright").APIRequestContext,
+  orderNumber: string,
+): Promise<{ orderDetails: OrderDetails; orderDetailsPageUrl: string }> {
+  const url = `${ORDERS_API_URL}/${orderNumber}`;
+  const response = await apiContext.get(url, {
+    headers: {
+      Accept: "application/json",
+      Referer: "https://www.carrefour.fr/mon-compte/mes-achats/en-ligne",
+      Origin: "https://www.carrefour.fr",
+      "X-Requested-With": "XMLHttpRequest",
+    },
+  });
+
+  if (response.status() === 401 || response.status() === 403) {
+    throw new Error(
+      `Carrefour API returned ${response.status()}. The session may be expired; run auth_login then auth_capture_state again.`,
+    );
+  }
+
+  if (!response.ok()) {
+    throw new Error(
+      `Carrefour API returned unexpected status ${response.status()}.`,
+    );
+  }
+
+  const apiOrder = (await response.json()) as ApiOrderResponse;
+  const orderDetailsPageUrl = resolveOrderDetailsUrl(orderNumber);
+  const orderDetails = extractOrderDetailsFromApi(
+    apiOrder,
+    orderDetailsPageUrl,
+  );
+
+  return { orderDetails, orderDetailsPageUrl };
+}
+
+async function fetchOrderDetailsFromAuthState(
+  orderNumber: string,
+): Promise<OrderDetails> {
+  const statePath = await readAuthStatePath();
+  const apiContext = await playwrightRequest.newContext({
+    storageState: statePath,
+    baseURL: "https://www.carrefour.fr",
+  });
+  try {
+    const { orderDetails } = await fetchOrderDetailsFromApi(
+      apiContext,
+      orderNumber,
+    );
+    return orderDetails;
+  } finally {
+    await apiContext.dispose();
+  }
+}
+
+async function fetchOrderDetailsFromCdp(
+  cdpUrl: string,
+  orderNumber: string,
+): Promise<OrderDetails> {
+  const browser = await chromium.connectOverCDP(cdpUrl);
+  try {
+    const context = browser.contexts()[0];
+    if (!context) {
+      throw new Error(
+        "No browser context found on CDP target. Open a normal browsing window first.",
+      );
+    }
+    // Use the live browser context's request so cookies are already attached.
+    const apiContext = context.request;
+    const { orderDetails } = await fetchOrderDetailsFromApi(
+      apiContext,
+      orderNumber,
+    );
+    return orderDetails;
+  } finally {
+    await browser.close().catch(() => undefined);
+  }
 }
 
 function normalizeDateToIso(rawDate: string | undefined): string | undefined {
@@ -413,99 +668,39 @@ function extractOrderDetailsFromHtml(
   };
 }
 
-async function loadOrderDetailsHtml(url: string): Promise<string> {
-  const browser = await getSharedBrowser();
-  const context = await createCarrefourContext(browser, {
-    useAuth: true,
-    requireAuth: true,
-  });
-
-  try {
-    const page = await context.newPage();
-    const response = await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    });
-
-    if (!response) {
-      throw new Error(
-        "Carrefour order details page did not return a response.",
-      );
-    }
-
-    await page
-      .waitForLoadState("networkidle", { timeout: 7000 })
-      .catch(() => undefined);
-
-    const html = await page.content();
-    if (isCloudflareChallengeHtml(html)) {
-      throw new Error(
-        "Cloudflare challenge detected while reading order details. Use an authenticated browser session.",
-      );
-    }
-
-    return html;
-  } finally {
-    await context.close();
-  }
-}
-
-async function loadOrderDetailsHtmlFromCdp(
-  url: string,
-  cdpUrl: string,
-): Promise<string> {
-  const browser = await chromium.connectOverCDP(cdpUrl);
-
-  try {
-    const context = browser.contexts()[0];
-    if (!context) {
-      throw new Error(
-        "No browser context found on CDP target. Open a normal browsing window first.",
-      );
-    }
-
-    const page = context.pages()[0] ?? (await context.newPage());
-    const response = await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    });
-
-    if (!response) {
-      throw new Error(
-        "Carrefour order details page did not return a response.",
-      );
-    }
-
-    await page
-      .waitForLoadState("networkidle", { timeout: 7000 })
-      .catch(() => undefined);
-
-    const html = await page.content();
-    if (isCloudflareChallengeHtml(html)) {
-      throw new Error(
-        "Cloudflare challenge detected while reading order details. Use an authenticated browser session.",
-      );
-    }
-
-    return html;
-  } finally {
-    await browser.close().catch(() => undefined);
-  }
-}
+// ─── Public API ────────────────────────────────────────────────────────────────
 
 export async function getCarrefourOrderDetails(
   orderRef: string,
   cdpUrl?: string,
 ): Promise<OrderDetails> {
-  const targetUrl = resolveOrderDetailsUrl(orderRef);
-  const html = cdpUrl
-    ? await loadOrderDetailsHtmlFromCdp(targetUrl, cdpUrl)
-    : await loadOrderDetailsHtml(targetUrl);
+  // Extract order number from orderRef (URL or numeric ID)
+  const normalized = orderRef.trim();
 
-  return extractOrderDetailsFromHtml(html, targetUrl);
+  let orderNumber: string;
+  if (normalized.startsWith("http://") || normalized.startsWith("https://")) {
+    const idMatch = normalized.match(/\/(\d{6,})(?:\?|$)/);
+    if (!idMatch) {
+      throw new Error(
+        "Unable to extract order ID from URL. Expected format: .../order-id or numeric ID at least 6 digits.",
+      );
+    }
+    orderNumber = idMatch[1];
+  } else if (/^\d{6,}$/.test(normalized)) {
+    orderNumber = normalized;
+  } else {
+    throw new Error(
+      "orderRef must be an absolute URL or a numeric order id (at least 6 digits)",
+    );
+  }
+
+  return cdpUrl
+    ? await fetchOrderDetailsFromCdp(cdpUrl, orderNumber)
+    : await fetchOrderDetailsFromAuthState(orderNumber);
 }
 
 export const __testing = {
+  extractOrderDetailsFromApi,
   extractOrderDetailsFromHtml,
   normalizeDateToIso,
   parseBilledFlag,

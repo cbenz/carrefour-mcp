@@ -120,3 +120,86 @@ test("normalizeDateToIso converts french formats", () => {
   expect(__testing.normalizeDateToIso("28/04/26")).toBe("2026-04-28");
   expect(__testing.normalizeDateToIso("08/04/2026")).toBe("2026-04-08");
 });
+
+test("extractOrderDetailsFromApi maps API response correctly", () => {
+  const apiResponse = {
+    attributes: {
+      orderNumber: "649654675",
+      date: "2026-04-28 19:53:01",
+      totalAmount: 176.07,
+      orderStatus: "RECEPTIONNEE",
+      slot: {
+        dateBegin: "2026-05-03 09:00:00",
+        dateEnd: "2026-05-03 11:00:00",
+      },
+      isPaidOnSite: false,
+      productList: {
+        categories: [
+          {
+            name: "Conserves et Bocaux",
+            products: [
+              {
+                attributes: {
+                  title: "Tomates concassées",
+                  brand: "CARREFOUR",
+                  ean: "1234567890123",
+                  slug: "tomates-concassees-carrefour",
+                  offers: {
+                    "1234567890123": {
+                      "A38A-151-900800": {
+                        attributes: {
+                          price: {
+                            price: 1.2,
+                            totalPrice: {
+                              delivered: 2.4,
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+                links: {
+                  self: "/p/tomates-concassees-carrefour-1234567890123",
+                },
+              },
+            ],
+          },
+        ],
+      },
+    },
+    links: {
+      orderDetailsPage: "/mon-compte/mes-achats/en-ligne/649654675",
+      getStatement: "/mon-compte/mes-achats/facture/649654675",
+      refundPage: "/mon-compte/mes-achats/remboursement/649654675",
+    },
+  };
+
+  const details = __testing.extractOrderDetailsFromApi(
+    apiResponse as any,
+    "https://www.carrefour.fr/mon-compte/mes-achats/en-ligne/649654675",
+  );
+
+  expect(details.id).toBe("649654675");
+  expect(details.url).toBe(
+    "https://www.carrefour.fr/mon-compte/mes-achats/en-ligne/649654675",
+  );
+  expect(details.orderedAt).toBe("2026-04-28");
+  expect(details.total).toBe(176.07);
+  expect(details.currency).toBe("EUR");
+  expect(details.deliverySlot).toBe("09h00 - 11h00");
+  expect(details.billed).toBe(true);
+  expect(details.products).toHaveLength(1);
+  expect(details.products?.[0]).toEqual({
+    name: "Tomates concassées",
+    productId: "1234567890123",
+    category: "Conserves et Bocaux",
+    unavailable: false,
+    quantity: undefined,
+    packaging: undefined,
+    totalPrice: 2.4,
+    unitPrice: 1.2,
+    currency: "EUR",
+    url: "https://www.carrefour.fr/p/tomates-concassees-carrefour-1234567890123",
+  });
+});

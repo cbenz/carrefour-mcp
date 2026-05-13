@@ -1,9 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import {
-  captureCarrefourAuthFromCdp,
+  captureCarrefourAuthState,
   getCarrefourAuthStatus,
-  loginCarrefourAuth,
+  importCarrefourAuthState,
   logoutCarrefourAuth,
 } from "./tools/auth.js";
 import { getCarrefourProduct } from "./tools/getProductDetails.js";
@@ -24,51 +24,7 @@ export function createServer(): McpServer {
   );
 
   server.registerTool(
-    "auth_login",
-    {
-      title: "Authenticate Carrefour account",
-      description:
-        "Open a visible browser for manual Carrefour login and save the authenticated browser session state.",
-      inputSchema: {
-        timeoutMs: z
-          .number()
-          .int()
-          .min(10000)
-          .max(600000)
-          .optional()
-          .describe("Optional login timeout in milliseconds"),
-      },
-    },
-    async ({ timeoutMs }) => {
-      try {
-        const result = await loginCarrefourAuth(timeoutMs);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(result, null, 2),
-            },
-          ],
-          structuredContent: result,
-        };
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Unknown error";
-        return {
-          content: [
-            {
-              type: "text",
-              text: `auth_login failed: ${message}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    },
-  );
-
-  server.registerTool(
-    "auth_capture_cdp",
+    "auth_capture_state",
     {
       title: "Capture auth from existing browser",
       description:
@@ -83,7 +39,7 @@ export function createServer(): McpServer {
     },
     async ({ cdpUrl }) => {
       try {
-        const result = await captureCarrefourAuthFromCdp(cdpUrl);
+        const result = await captureCarrefourAuthState(cdpUrl);
         return {
           content: [
             {
@@ -100,7 +56,59 @@ export function createServer(): McpServer {
           content: [
             {
               type: "text",
-              text: `auth_capture_cdp failed: ${message}`,
+              text: `auth_capture_state failed: ${message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "auth_import_state",
+    {
+      title: "Import Carrefour auth state",
+      description:
+        "Import a Playwright storageState payload and persist it as local Carrefour auth state. Optionally specify destinationPath to avoid overwriting the default location.",
+      inputSchema: {
+        storageState: z
+          .object({
+            cookies: z.array(z.record(z.string(), z.any())),
+            origins: z.array(z.record(z.string(), z.any())),
+          })
+          .describe("Playwright storageState payload"),
+        destinationPath: z
+          .string()
+          .optional()
+          .describe(
+            "Optional destination file path for the state (uses default if not provided)",
+          ),
+      },
+    },
+    async ({ storageState, destinationPath }) => {
+      try {
+        const result = await importCarrefourAuthState(
+          storageState,
+          destinationPath,
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `auth_import_state failed: ${message}`,
             },
           ],
           isError: true,
@@ -193,8 +201,10 @@ export function createServer(): McpServer {
           .int()
           .min(1)
           .max(100)
-          .default(20)
-          .describe("Maximum number of orders to return"),
+          .optional()
+          .describe(
+            "Maximum number of orders to return (if omitted, all available orders are returned)",
+          ),
         cdpUrl: z
           .string()
           .url()
@@ -202,11 +212,28 @@ export function createServer(): McpServer {
           .describe(
             "Optional CDP endpoint URL for an already authenticated browser",
           ),
+        startDate: z
+          .string()
+          .optional()
+          .describe(
+            "Filter orders from this date (ISO 8601, e.g. 2024-01-01T00:00:00.000Z)",
+          ),
+        endDate: z
+          .string()
+          .optional()
+          .describe(
+            "Filter orders up to this date (ISO 8601, e.g. 2026-12-31T00:00:00.000Z)",
+          ),
       },
     },
-    async ({ limit, cdpUrl }) => {
+    async ({ limit, cdpUrl, startDate, endDate }) => {
       try {
-        const result = await listCarrefourOrders(limit, cdpUrl);
+        const result = await listCarrefourOrders(
+          limit,
+          cdpUrl,
+          startDate,
+          endDate,
+        );
         return {
           content: [
             {

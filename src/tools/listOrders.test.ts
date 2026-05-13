@@ -143,3 +143,118 @@ test("parseOrderTimeSlot and parseBilledFlag parse expected values", () => {
   ).toBe("09h00 - 11h00");
   expect(__testing.parseBilledFlag("Facturée")).toBe(true);
 });
+
+test("extractOrdersFromApiResponse maps API data to OrderSummary", () => {
+  const apiData = [
+    {
+      attributes: {
+        orderNumber: "649654675",
+        date: "2026-04-28 19:53:01",
+        totalAmount: 176.07,
+        orderStatus: "RECEPTIONNEE",
+        serviceType: "HOME_DELIVERY",
+        slot: {
+          dateBegin: "2026-05-03 09:00:01",
+          dateEnd: "2026-05-03 11:00:01",
+        },
+        isPaidOnSite: false,
+        paymentInfos: [
+          { amount: 177.99, date: "2026-04-28T19:53:01+02:00", choice: "VISA" },
+        ],
+      },
+      links: {
+        orderDetailsPage: "/mon-compte/mes-achats/en-ligne/649654675",
+        getStatement: "/mon-compte/mes-achats/facture/649654675",
+      },
+    },
+    {
+      attributes: {
+        orderNumber: "643633662",
+        date: "2026-04-08 13:24:51",
+        totalAmount: 161.53,
+        orderStatus: "RECEPTIONNEE",
+        serviceType: "HOME_DELIVERY",
+        slot: {
+          dateBegin: "2026-04-09 13:00:01",
+          dateEnd: "2026-04-09 15:00:01",
+        },
+        isPaidOnSite: false,
+        paymentInfos: [
+          { amount: 161.53, date: "2026-04-08T13:24:51+02:00", choice: "VISA" },
+        ],
+      },
+      links: {
+        orderDetailsPage: "/mon-compte/mes-achats/en-ligne/643633662",
+        getStatement: "/mon-compte/mes-achats/facture/643633662",
+      },
+    },
+    {
+      attributes: {
+        orderNumber: "612345678",
+        date: "2025-12-15 10:05:00",
+        totalAmount: 89.9,
+        orderStatus: "EN_PREPARATION",
+        serviceType: "HOME_DELIVERY",
+        slot: null,
+        isPaidOnSite: false,
+        paymentInfos: [],
+      },
+      links: {
+        orderDetailsPage: "/mon-compte/mes-achats/en-ligne/612345678",
+        getStatement: null,
+      },
+    },
+  ];
+
+  expect(__testing.extractOrdersFromApiResponse(apiData)).toEqual([
+    {
+      id: "649654675",
+      date: "2026-04-28",
+      total: 176.07,
+      currency: "EUR",
+      status: "RECEPTIONNEE",
+      timeSlot: "09h00 - 11h00",
+      billed: true,
+      detailUrl:
+        "https://www.carrefour.fr/mon-compte/mes-achats/en-ligne/649654675",
+    },
+    {
+      id: "643633662",
+      date: "2026-04-08",
+      total: 161.53,
+      currency: "EUR",
+      status: "RECEPTIONNEE",
+      timeSlot: "13h00 - 15h00",
+      billed: true,
+      detailUrl:
+        "https://www.carrefour.fr/mon-compte/mes-achats/en-ligne/643633662",
+    },
+    {
+      id: "612345678",
+      date: "2025-12-15",
+      total: 89.9,
+      currency: "EUR",
+      status: "EN_PREPARATION",
+      timeSlot: undefined,
+      billed: undefined,
+      detailUrl:
+        "https://www.carrefour.fr/mon-compte/mes-achats/en-ligne/612345678",
+    },
+  ]);
+});
+
+test("sortOrdersByDateDesc sorts newest first and places undated orders last", () => {
+  const sorted = __testing.sortOrdersByDateDesc([
+    { id: "3", date: "2025-01-10" },
+    { id: "1", date: "2026-04-28" },
+    { id: "4" },
+    { id: "2", date: "2026-01-01" },
+  ]);
+
+  expect(sorted).toEqual([
+    { id: "1", date: "2026-04-28" },
+    { id: "2", date: "2026-01-01" },
+    { id: "3", date: "2025-01-10" },
+    { id: "4" },
+  ]);
+});

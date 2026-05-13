@@ -20,8 +20,7 @@ test("buildAuthConfigFromEnv uses ~/.cache/carrefour-mcp by default", () => {
 test("buildAuthConfigFromEnv expands home path override", () => {
   const config = sessionTesting.buildAuthConfigFromEnv({
     CARREFOUR_AUTH_STATE_PATH: "~/.cache/carrefour-mcp/custom-state.json",
-    CARREFOUR_AUTH_BROWSER_PROFILE_DIR:
-      "~/.cache/carrefour-mcp/custom-profile",
+    CARREFOUR_AUTH_BROWSER_PROFILE_DIR: "~/.cache/carrefour-mcp/custom-profile",
     CARREFOUR_AUTH_BROWSER_CHANNEL: "chrome",
     CARREFOUR_AUTH_ENABLED: "false",
     CARREFOUR_AUTH_LOGIN_TIMEOUT_MS: "45000",
@@ -56,4 +55,57 @@ test("isAuthenticatedSession detects authenticated signals", () => {
 
 test("auth testing exports default CDP URL", () => {
   expect(authTesting.DEFAULT_CDP_URL).toBe("http://127.0.0.1:9222");
+});
+
+test("buildManualChromeLaunchPlan builds launch command with defaults", () => {
+  const plan = authTesting.buildManualChromeLaunchPlan({});
+
+  expect(plan.chromeBinary).toBe("google-chrome");
+  expect(plan.cdpUrl).toBe("http://127.0.0.1:9222");
+  expect(plan.profileDir).toBe(
+    path.join(homedir(), ".cache", "carrefour-mcp", "manual-chrome"),
+  );
+  expect(plan.args).toContain("--remote-debugging-port=9222");
+  expect(plan.args).toContain(
+    `--user-data-dir=${path.join(homedir(), ".cache", "carrefour-mcp", "manual-chrome")}`,
+  );
+});
+
+test("buildManualChromeLaunchPlan respects custom cdp url and profile", () => {
+  const plan = authTesting.buildManualChromeLaunchPlan({
+    cdpUrl: "http://127.0.0.1:9333",
+    profileDir: "~/.cache/carrefour-mcp/custom-manual",
+    chromeBinary: "chromium",
+  });
+
+  expect(plan.chromeBinary).toBe("chromium");
+  expect(plan.cdpUrl).toBe("http://127.0.0.1:9333");
+  expect(plan.profileDir).toBe(
+    path.join(homedir(), ".cache", "carrefour-mcp", "custom-manual"),
+  );
+  expect(plan.args).toContain("--remote-debugging-port=9333");
+  expect(plan.command).toContain("chromium");
+});
+
+test("isValidStorageStatePayload validates minimal Playwright shape", () => {
+  expect(
+    authTesting.isValidStorageStatePayload({
+      cookies: [
+        {
+          name: "cf_clearance",
+          value: "token",
+          domain: ".carrefour.fr",
+          path: "/",
+        },
+      ],
+      origins: [],
+    }),
+  ).toBe(true);
+
+  expect(
+    authTesting.isValidStorageStatePayload({
+      cookies: [{ name: "missing-fields" }],
+      origins: [],
+    }),
+  ).toBe(false);
 });
