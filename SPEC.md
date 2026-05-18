@@ -15,7 +15,7 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 ## Déploiement
 
 - Le projet fournit un sous-répertoire `deploy/` versionné dans Git.
-- Le script d'installation du dépôt crée l'utilisateur Unix dédié, installe les paquets Debian nécessaires, clone ou met à jour le dépôt Git sur le serveur, installe Chromium pour Playwright via `npm run install:browsers`, déploie l'unité systemd et démarre le service.
+- Le script d'installation du dépôt crée l'utilisateur Unix dédié, installe les paquets Debian nécessaires (dont `chromium` et `xauth`), clone ou met à jour le dépôt Git sur le serveur, installe Chromium pour Playwright via `npm run install:browsers`, déploie l'unité systemd et démarre le service.
 - Le script d'installation peut être exécuté depuis une simple copie du fichier (par exemple via `scp`) sans checkout local préalable.
 - Si `REPO_URL` n'est pas fourni et qu'aucune métadonnée Git locale n'est disponible, le script utilise `https://github.com/cbenz/carrefour-mcp`.
 - Si `REPO_BRANCH` n'est pas fourni et ne peut pas être détecté, le script utilise `main`.
@@ -59,9 +59,8 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 
 ## CLI Commands (local only)
 
-- `auth_login`: lance Google Chrome automatiquement avec remote debugging pour une authentification manuelle
+- `auth_login`: affiche une commande SSH `-Y` recommandée pour lancer Chromium sur la machine distante avec remote debugging
 - `auth_capture_state`: capture la session depuis Chrome via CDP
-- `auth_upload`: envoie la session authentifiée à un serveur MCP distant non local
 - `auth_status`: vérifie l'état de la session locale
 - `auth_logout`: supprime la session locale
 - `list_orders`: récupère l'historique des commandes
@@ -71,11 +70,15 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 
 ### CLI: `auth_login`
 
-- Lance automatiquement Google Chrome avec remote debugging activé:
+- Affiche une commande recommandée pour lancer Chromium sur l'hôte distant via SSH avec X11 forwarding:
+  - format: `ssh -Y <ssh-target> chromium --remote-debugging-port=<port dérivé du cdp-url> --user-data-dir=<profil manuel distant> https://www.carrefour.fr/mon-compte`
+  - valeur par défaut de `<ssh-target>`: `coursicota@203.0.113.42`
+  - override possible via `CARREFOUR_AUTH_SSH_TARGET`
+- La commande suggérée inclut remote debugging activé:
   - `--remote-debugging-port=<port dérivé du cdp-url>`
-  - `--user-data-dir=<profil manuel local>`
+  - `--user-data-dir=<profil manuel distant>`
   - URL initiale `https://www.carrefour.fr/mon-compte`
-- Le CLI affiche la commande exacte utilisée pour aider au diagnostic et le fichier `cdpUrl`
+- Le CLI affiche la commande exacte à exécuter, pas un bloc JSON
 - L'utilisateur doit manuellement compléter le login et les challenges Cloudflare dans le navigateur
 - Le CLI ne capture PAS la session: la capture se fait ensuite via `auth_capture_state` ou `auth_capture_state --cleanup-profile`
 
@@ -93,6 +96,7 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 
 - Input:
   - `cdpUrl` (string URL, optionnel, défaut: `http://127.0.0.1:9222`)
+  - `authStatePath` (string, optionnel, chemin de fichier où sauvegarder le storageState)
   - `cleanupProfile` (boolean, optionnel, défaut: `true`, CLI uniquement)
   - `profileDir` (string, optionnel, chemin du profil manuel à nettoyer, CLI uniquement)
 - Output:
@@ -102,7 +106,8 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 - Implémentation:
   - se connecte en CDP à un navigateur déjà ouvert
   - vérifie l'état authentifié Carrefour
-  - sauvegarde la session Playwright (`storageState`) localement
+  - sauvegarde la session Playwright (`storageState`) localement vers `authStatePath` si fourni
+  - si `authStatePath` n'est pas fourni, lit `CARREFOUR_AUTH_CAPTURE_STATE_PATH` puis `CARREFOUR_AUTH_STATE_PATH`
   - en mode CLI, peut supprimer le répertoire de profil manuel après capture réussie (`cleanupProfile=true`)
 
 ### `auth_import_state`
@@ -118,25 +123,6 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 - Implémentation:
   - valide le payload minimal (`cookies` array et `origins` array)
   - écrit l'état importé à `destinationPath` (si fourni) ou au chemin d'état par défaut
-
-### CLI: `auth_upload`
-
-- Input:
-  - `serverUrl` (string URL, optionnel, endpoint MCP HTTP distant)
-  - `statePath` (string, optionnel, chemin du fichier `storageState` local à envoyer)
-  - `destinationPath` (string, optionnel, chemin de destination sur le serveur distant)
-- Output:
-  - `uploaded` (boolean)
-  - `serverUrl` (string)
-  - `sourceStatePath` (string)
-  - `importResult` (object)
-- Implémentation:
-  - lit le fichier `storageState` local puis appelle le tool MCP `auth_import_state` sur `serverUrl`
-  - si `serverUrl` n'est pas fourni, lit `CARREFOUR_AUTH_UPLOAD_SERVER_URL` puis un fichier `.env` local s'il existe
-  - si disponibles, réutilise les identifiants Basic Auth depuis `CARREFOUR_AUTH_UPLOAD_BASIC_AUTH_USER` et `CARREFOUR_AUTH_UPLOAD_BASIC_AUTH_PASSWORD`, avec fallback sur `CARREFOUR_MCP_BASIC_AUTH_USER` et `CARREFOUR_MCP_BASIC_AUTH_PASSWORD`
-  - refuse les destinations loopback ou locales (`localhost`, `127.0.0.1`, `::1`)
-  - n'utilise aucune valeur par défaut pointant vers un serveur local
-- Note: pour un serveur exécuté sur la même machine, l'import via `auth_upload` n'est pas supporté; il faut utiliser directement le fichier local ou appeler `auth_import_state` explicitement avec un chemin de destination dédié
 
 ### `auth_logout`
 
@@ -176,6 +162,7 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - pagination par curseur : première requête sur `page=1&pageSize=20`, puis requêtes suivantes avec `scrollPaging` et `scrollHash` retournés dans `meta`
   - itère jusqu'à obtenir `limit` commandes si `limit` est fourni, sinon jusqu'à épuisement du curseur
   - résilience pagination: si l'API Carrefour renvoie un `400` pendant une page suivante (après au moins une page valide), le tool retourne les commandes déjà collectées au lieu d'échouer
+  - en cas de `401` ou `403`, le serveur journalise les détails de la réponse Carrefour (URL, status, extrait du body) pour faciliter le diagnostic
   - si un `400` survient dès la première page, le tool renvoie une erreur explicite
   - protection anti-boucle : arrête la pagination si une page duplique exactement la précédente ou si aucune nouvelle commande n'est ajoutée
   - headers requis : `Cookie`, `Accept: application/json`, `Referer`, `Origin`, `X-Requested-With: XMLHttpRequest`
@@ -223,6 +210,7 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - utilise l'API interne `https://www.carrefour.fr/api/user/orders/{orderNumber}` avec les cookies de la session authentifiée
   - en mode auth state : lit les cookies depuis le fichier JSON local
   - en mode CDP : se connecte au navigateur via CDP et utilise son contexte de requête pour appeler l'API
+  - en cas de `401` ou `403`, le serveur journalise les détails de la réponse Carrefour (URL, status, extrait du body) pour faciliter le diagnostic
   - extrait la commande de la réponse JSON (`attributes`)
   - extrait les produits depuis `productList.categories[].products[]`
   - trie les produits par `productId` en ordre numérique croissant
@@ -339,7 +327,6 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 - Commande:
   - `carrefour-mcp auth_login`
   - `carrefour-mcp auth_capture_state`
-  - `carrefour-mcp auth_upload`
   - `carrefour-mcp auth_status`
   - `carrefour-mcp auth_logout`
   - `carrefour-mcp list_orders`
@@ -348,12 +335,12 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - `--limit <number>` pour limiter le nombre de produits retournés
   - `auth_login --timeout-ms <number>` option conservée pour compatibilité (sans effet)
   - `auth_login --cdp-url <url>` pour choisir le endpoint CDP visé ensuite
-  - `auth_login --profile-dir <path>` pour choisir le répertoire de profil manuel Chrome
-  - `auth_login --chrome-bin <path|name>` pour choisir le binaire Chrome à lancer
+  - `auth_login --profile-dir <path>` pour choisir le répertoire de profil manuel Chromium distant
+  - `auth_login --chrome-bin <path|name>` pour choisir le binaire Chromium/Chrome distant
+  - `auth_login --ssh-target <user@host>` pour choisir l'hôte SSH du navigateur distant
   - `auth_capture_state --cleanup-profile` pour nettoyer le profil manuel après capture réussie
   - `auth_capture_state --profile-dir <path>` pour choisir le répertoire de profil à nettoyer
-  - `auth_upload --server-url <url>` pour choisir l'endpoint MCP HTTP distant (défaut: `http://127.0.0.1:3000/mcp`)
-  - `auth_upload --state-path <path>` pour choisir le fichier `storageState` local à envoyer
+  - `auth_capture_state --auth-state-path <path>` pour choisir le chemin de sauvegarde du `storageState`
   - `list_orders --limit <number>` pour limiter le nombre de commandes retournées
   - `list_orders --cdp-url <url>` pour lire les commandes via une session navigateur déjà ouverte
   - `list_orders --start-date <iso>` pour filtrer les commandes à partir de cette date (format ISO 8601)

@@ -28,7 +28,7 @@ ensure_user() {
 ensure_prerequisites() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y ca-certificates curl git nodejs npm python3 build-essential pkg-config
+  apt-get install -y ca-certificates curl git chromium xauth nodejs npm python3 build-essential pkg-config
 }
 
 ensure_pnpm() {

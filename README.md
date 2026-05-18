@@ -17,7 +17,6 @@ carrefour-mcp lets you search products on Carrefour France and get structured re
 - CLI command available: carrefour-mcp get_product_details
 - CLI command available: carrefour-mcp auth_login
 - CLI command available: carrefour-mcp auth_capture_state
-- CLI command available: carrefour-mcp auth_upload
 - CLI command available: carrefour-mcp auth_status
 - CLI command available: carrefour-mcp auth_logout
 - CLI command available: carrefour-mcp list_orders
@@ -59,14 +58,12 @@ graph TB
         CARREFOUR["Carrefour.fr"]
     end
 
-    subgraph "Auth State Upload Flow"
+    subgraph "Auth State Capture Flow"
         CLI -->|"1. auth_capture_state"| AUTH
         CHROME -->|"2. CDP connection"| AUTH
         AUTH -->|"3. Get storageState"| CHROME
         AUTH -->|"4. Save locally"| STORAGE
-        CLI -->|"5. auth_upload<br/>--server-url"| HTTP
-        HTTP -->|"6. POST auth_import_state"| AUTH
-        AUTH -->|"7. Save state"| SESSION
+        AUTH -->|"5. Reused by tools"| SESSION
     end
 
     MCP --> AUTH
@@ -109,9 +106,9 @@ Install browser runtime:
 pnpm install:browsers
 ```
 
-For a Debian production machine, the repository also provides `deploy/scripts/install.sh`, which creates the Unix user, installs the required system packages, clones or updates the repository on the server, downloads Chromium for Playwright, and installs the systemd service.
+For a Debian production machine, the repository also provides `deploy/scripts/install.sh`, which creates the Unix user, installs the required system packages (including `chromium` and `xauth`), clones or updates the repository on the server, downloads Chromium for Playwright, and installs the systemd service.
 The script can be copied and executed outside a local checkout; if `REPO_URL` is not provided and no local Git metadata is available, it defaults to `https://github.com/cbenz/carrefour-mcp` (branch `main` when not detected).
-The `auth_upload` command can read its remote URL and Basic Auth credentials from environment variables or a local `.env` file: `CARREFOUR_AUTH_UPLOAD_SERVER_URL`, `CARREFOUR_AUTH_UPLOAD_BASIC_AUTH_USER`, and `CARREFOUR_AUTH_UPLOAD_BASIC_AUTH_PASSWORD`.
+For remote login with GUI forwarding, `auth_login` prints an SSH `-Y` command that launches `chromium` with remote debugging on the target host.
 
 ## Start The MCP Server
 
@@ -147,8 +144,8 @@ pnpm --silent cli get_product_details "3608580823445"
 pnpm --silent cli get_product_details "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379"
 pnpm --silent cli auth_login
 pnpm --silent cli auth_capture_state
+pnpm --silent cli auth_capture_state --auth-state-path /tmp/auth-state.json
 pnpm --silent cli auth_capture_state --cleanup-profile
-pnpm --silent cli auth_upload --server-url https://carrefour-mcp.coursicota.com/mcp
 pnpm --silent cli auth_status
 pnpm --silent cli list_orders --limit 10
 pnpm --silent cli list_orders --limit 10 --cdp-url http://127.0.0.1:9222
@@ -169,8 +166,8 @@ carrefour-mcp get_product_details "3608580823445"
 carrefour-mcp get_product_details "https://www.carrefour.fr/p/jus-de-carotte-pur-jus-carrefour-extra-3560070583379"
 carrefour-mcp auth_login
 carrefour-mcp auth_capture_state
+carrefour-mcp auth_capture_state --auth-state-path /tmp/auth-state.json
 carrefour-mcp auth_capture_state --cleanup-profile
-carrefour-mcp auth_upload --server-url https://carrefour-mcp.coursicota.com/mcp
 carrefour-mcp auth_status
 carrefour-mcp list_orders --limit 10
 carrefour-mcp list_orders --limit 10 --cdp-url http://127.0.0.1:9222
@@ -188,13 +185,17 @@ Output format:
 
 To access account-only features such as order history:
 
-1. Run `auth_login` to start Chrome with remote debugging and a dedicated manual profile:
+1. Run `auth_login` to print the recommended SSH command for launching remote Chromium with debugging:
 
 ```bash
 pnpm --silent cli auth_login
 ```
 
-`auth_login` also prints the exact `google-chrome` command used.
+`auth_login` prints a command in the form:
+
+```bash
+ssh -Y coursicota@203.0.113.42 chromium --remote-debugging-port=9222 --user-data-dir=/home/coursicota/.cache/carrefour-mcp/manual-chrome https://www.carrefour.fr/mon-compte
+```
 
 1. In that Chrome window, log in to Carrefour and validate the human check manually.
 
@@ -212,17 +213,11 @@ pnpm --silent cli auth_capture_state --cleanup-profile
 
 1. The session state is saved locally and reused by authenticated tools.
 
-2. Optional: upload the local state to a remote MCP server:
-
-```bash
-pnpm --silent cli auth_upload --server-url https://carrefour-mcp.coursicota.com/mcp
-```
-
-`auth_upload` refuses local MCP destinations such as `localhost`, `127.0.0.1`, and `::1`.
-If the MCP server runs on the same machine, keep using the local auth state file directly instead of uploading it back to the same host.
+When Carrefour returns 401 or 403 on authenticated API calls, carrefour-mcp now logs diagnostic details (request URL, status, and response body preview) on server stderr.
 
 Authentication state is stored in a local JSON file (default path: `~/.cache/carrefour-mcp/auth-state.json`).
 You can override it with `CARREFOUR_AUTH_STATE_PATH`.
+For `auth_capture_state`, you can also use `--auth-state-path` or `CARREFOUR_AUTH_CAPTURE_STATE_PATH`.
 
 Check status:
 
@@ -290,7 +285,7 @@ If you prefer to launch Chrome yourself, you can still run `auth_capture_state` 
 1. Start Chrome with remote debugging enabled:
 
 ```bash
-google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.cache/carrefour-mcp/manual-chrome"
+chromium --remote-debugging-port=9222 --user-data-dir="$HOME/.cache/carrefour-mcp/manual-chrome"
 ```
 
 1. In that Chrome window, log in to Carrefour and validate the human check manually.
@@ -349,13 +344,8 @@ You can configure search caching with environment variables:
 - CARREFOUR_AUTH_BROWSER_CHANNEL (optional: chromium, chrome, msedge)
 - CARREFOUR_AUTH_LOGIN_TIMEOUT_MS (default: 180000)
 
-### Multi-Server Setup
+### Remote GUI Login (SSH -Y)
 
-Use `auth_upload` only for a genuinely remote MCP server:
-
-```bash
-pnpm --silent cli auth_upload \
-  --server-url https://carrefour-mcp.coursicota.com/mcp
-```
-
-Local MCP destinations such as `localhost`, `127.0.0.1`, and `::1` are rejected by the CLI.
+`auth_login` supports remote GUI login workflows by printing an SSH forwarding command.
+You can override the default SSH target with `CARREFOUR_AUTH_SSH_TARGET` or `--ssh-target`.
+You can override the remote Chromium profile path with `CARREFOUR_AUTH_REMOTE_PROFILE_DIR`.

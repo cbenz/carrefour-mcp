@@ -1,16 +1,13 @@
 #!/usr/bin/env node
 
 import { Command, CommanderError, InvalidArgumentError } from "commander";
-import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import {
-  buildManualChromeLaunchPlan,
+  buildManualChromeRemoteCommandPlan,
   cleanupManualChromeProfileDir,
   captureCarrefourAuthState,
   getCarrefourAuthStatus,
   logoutCarrefourAuth,
 } from "./tools/auth.js";
-import { buildAuthConfigFromEnv, expandHomePath } from "./auth/session.js";
 import {
   closeProductBrowser,
   getCarrefourProduct,
@@ -21,9 +18,7 @@ import {
   closeBrowser,
   searchCarrefourProducts,
 } from "./tools/searchProducts.js";
-import { parseRemoteServerUrl } from "./tools/remoteServerUrl.js";
 import { setupPipeSafeStdout } from "./cliOutput.js";
-import { resolveAuthUploadConfig } from "./authUploadEnv.js";
 
 setupPipeSafeStdout(process.stdout);
 
@@ -60,86 +55,6 @@ function parseTimeoutMs(value: string): number {
   return parsedValue;
 }
 
-async function callImportStateTool(
-  serverUrl: string,
-  storageState: unknown,
-  destinationPath?: string,
-  credentials?: { user: string; password: string },
-): Promise<unknown> {
-  const headers: Record<string, string> = {
-    Accept: "application/json, text/event-stream",
-    "Content-Type": "application/json",
-    "MCP-Protocol-Version": "2025-03-26",
-  };
-
-  if (credentials) {
-    headers.Authorization = `Basic ${Buffer.from(
-      `${credentials.user}:${credentials.password}`,
-    ).toString("base64")}`;
-  }
-
-  const response = await fetch(serverUrl, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "auth-upload",
-      method: "tools/call",
-      params: {
-        name: "auth_import_state",
-        arguments: {
-          storageState,
-          ...(destinationPath && { destinationPath }),
-        },
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} while calling ${serverUrl}`);
-  }
-
-  const responseText = await response.text();
-
-  // Parse SSE messages
-  const messages = responseText
-    .split("\n\n")
-    .map((chunk) => chunk.trim())
-    .filter((chunk) => chunk.startsWith("event: message"))
-    .map((chunk) => {
-      const dataLine = chunk
-        .split("\n")
-        .find((line) => line.startsWith("data: "));
-
-      if (!dataLine) {
-        throw new Error("Missing data payload in MCP SSE response");
-      }
-
-      return JSON.parse(dataLine.slice(6)) as {
-        result?: { structuredContent?: unknown };
-        error?: { message?: string };
-      };
-    });
-
-  const message = messages.at(-1);
-
-  if (!message) {
-    throw new Error("Empty MCP response");
-  }
-
-  if (message.error) {
-    throw new Error(`MCP error: ${message.error.message}`);
-  }
-
-  const result = message.result?.structuredContent;
-
-  if (!result) {
-    throw new Error("Empty MCP response: missing structuredContent");
-  }
-
-  return result;
-}
-
 const program = new Command();
 
 program
@@ -161,7 +76,7 @@ program
 program
   .command("auth_login")
   .description(
-    "Launch local Chrome with remote debugging for manual Carrefour login",
+    "Print the SSH command to run Chromium remotely with remote debugging for manual Carrefour login",
   )
   .option(
     "--timeout-ms <number>",
@@ -178,7 +93,11 @@ program
   )
   .option(
     "--chrome-bin <path>",
-    "Chrome binary to launch (default: google-chrome)",
+    "Chromium/Chrome binary to include in the suggested command (default: chromium)",
+  )
+  .option(
+    "--ssh-target <target>",
+    "SSH target used in the suggested command (default: coursicota@203.0.113.42)",
   )
   .action(
     async (options: {
@@ -186,30 +105,15 @@ program
       cdpUrl?: string;
       profileDir?: string;
       chromeBin?: string;
+      sshTarget?: string;
     }): Promise<void> => {
-      const plan = buildManualChromeLaunchPlan({
+      const plan = buildManualChromeRemoteCommandPlan({
         cdpUrl: options.cdpUrl,
         profileDir: options.profileDir,
         chromeBinary: options.chromeBin,
+        sshTarget: options.sshTarget,
       });
-
-      const child = spawn(plan.chromeBinary, plan.args, {
-        detached: true,
-        stdio: "ignore",
-      });
-      child.unref();
-
-      const result = {
-        authenticated: false,
-        launched: true,
-        command: plan.command,
-        cdpUrl: plan.cdpUrl,
-        profileDir: plan.profileDir,
-        message:
-          "Chrome launched for manual login. Complete login and challenge in the opened browser, then run auth_capture_state.",
-      };
-
-      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      process.stdout.write(`${plan.command}\n`);
     },
   );
 
@@ -223,6 +127,10 @@ program
     "CDP endpoint URL (default: http://127.0.0.1:9222)",
   )
   .option(
+    "--auth-state-path <path>",
+    "Optional storageState destination path (fallback: CARREFOUR_AUTH_CAPTURE_STATE_PATH, then CARREFOUR_AUTH_STATE_PATH)",
+  )
+  .option(
     "--cleanup-profile",
     "Delete the manual Chrome profile directory after successful capture",
   )
@@ -230,10 +138,14 @@ program
   .action(
     async (options: {
       cdpUrl?: string;
+      authStatePath?: string;
       cleanupProfile?: boolean;
       profileDir?: string;
     }): Promise<void> => {
-      const result = await captureCarrefourAuthState(options.cdpUrl);
+      const result = await captureCarrefourAuthState(
+        options.cdpUrl,
+        options.authStatePath,
+      );
 
       if (result.authenticated && options.cleanupProfile !== false) {
         const cleanup = await cleanupManualChromeProfileDir(
@@ -249,89 +161,6 @@ program
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     },
   );
-
-program
-  .command("auth_upload")
-  .description(
-    "Upload local auth state to a remote MCP server via auth_import_state",
-  )
-  .option(
-    "--server-url <url>",
-    "Remote MCP HTTP endpoint URL (must not be localhost or loopback)",
-  )
-  .option(
-    "--state-path <path>",
-    "Optional local Playwright storageState JSON file to upload (legacy mode)",
-  )
-  .option(
-    "--destination-path <path>",
-    "Optional remote destination path for the imported state (uses server default if not provided)",
-  )
-  .action(async function (
-    this: Command,
-    options: {
-      serverUrl?: string;
-      statePath?: string;
-      destinationPath?: string;
-    },
-  ): Promise<void> {
-    const authUploadConfig = await resolveAuthUploadConfig({
-      serverUrl: options.serverUrl,
-    });
-
-    let remoteServerUrl: string;
-
-    try {
-      remoteServerUrl = parseRemoteServerUrl(authUploadConfig.serverUrl);
-    } catch (error) {
-      if (error instanceof InvalidArgumentError) {
-        this.error(error.message, { exitCode: 1, code: error.code });
-      }
-
-      throw error;
-    }
-
-    const authConfig = buildAuthConfigFromEnv();
-
-    let storageState: unknown;
-    let sourceStatePath: string;
-
-    if (options.statePath) {
-      const resolvedStatePath = expandHomePath(options.statePath);
-      const rawState = await readFile(resolvedStatePath, { encoding: "utf-8" });
-      storageState = JSON.parse(rawState) as unknown;
-      sourceStatePath = resolvedStatePath;
-    } else {
-      const resolvedStatePath = authConfig.statePath;
-      const rawState = await readFile(resolvedStatePath, { encoding: "utf-8" }).catch(() => {
-        throw new Error(
-          "No local auth state found. Run auth_login then auth_capture_state first.",
-        );
-      });
-      storageState = JSON.parse(rawState) as unknown;
-      sourceStatePath = resolvedStatePath;
-    }
-
-    const importResult = await callImportStateTool(
-      remoteServerUrl,
-      storageState,
-      options.destinationPath,
-      authUploadConfig.credentials,
-    );
-
-    process.stdout.write(
-      `${JSON.stringify(
-        {
-          uploaded: true,
-          serverUrl: remoteServerUrl,
-          sourceStatePath,
-          importResult,
-        },
-        null,
-        2,
-      )}\n`,
-    );
-  });
 
 program
   .command("auth_status")

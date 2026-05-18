@@ -14,7 +14,10 @@ import { getSharedBrowser } from "../playwright.js";
 const ACCOUNT_URL = "https://www.carrefour.fr/mon-compte";
 const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
 const DEFAULT_MANUAL_PROFILE_DIR = "~/.cache/carrefour-mcp/manual-chrome";
-const DEFAULT_CHROME_BIN = "google-chrome";
+const DEFAULT_REMOTE_PROFILE_DIR =
+	"/home/coursicota/.cache/carrefour-mcp/manual-chrome";
+const DEFAULT_CHROME_BIN = "chromium";
+const DEFAULT_AUTH_SSH_TARGET = "coursicota@203.0.113.42";
 
 type AuthDetectionSignals = {
 	url: string;
@@ -51,6 +54,11 @@ export type ManualChromeLaunchPlan = {
 	chromeBinary: string;
 	profileDir: string;
 	args: string[];
+	command: string;
+};
+
+export type ManualChromeRemoteCommandPlan = {
+	sshTarget: string;
 	command: string;
 };
 
@@ -112,6 +120,19 @@ function getManualChromeBinary(env: NodeJS.ProcessEnv = process.env): string {
 	return env.CARREFOUR_AUTH_CHROME_BIN?.trim() || DEFAULT_CHROME_BIN;
 }
 
+function getDefaultSshTarget(env: NodeJS.ProcessEnv = process.env): string {
+	return env.CARREFOUR_AUTH_SSH_TARGET?.trim() || DEFAULT_AUTH_SSH_TARGET;
+}
+
+function getDefaultRemoteProfileDir(
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	return (
+		env.CARREFOUR_AUTH_REMOTE_PROFILE_DIR?.trim() ||
+		DEFAULT_REMOTE_PROFILE_DIR
+	);
+}
+
 function deriveDebugPort(cdpUrl: string): number {
 	const parsed = new URL(cdpUrl);
 	const rawPort = parsed.port || "9222";
@@ -150,6 +171,30 @@ export function buildManualChromeLaunchPlan(
 		profileDir,
 		args,
 		command: [chromeBinary, ...args].map(quoteShellArg).join(" "),
+	};
+}
+
+export function buildManualChromeRemoteCommandPlan(
+	options?: {
+		cdpUrl?: string;
+		profileDir?: string;
+		chromeBinary?: string;
+		sshTarget?: string;
+	},
+	env: NodeJS.ProcessEnv = process.env,
+): ManualChromeRemoteCommandPlan {
+	const launchPlan = buildManualChromeLaunchPlan(
+		{
+			...options,
+			profileDir: options?.profileDir?.trim() || getDefaultRemoteProfileDir(env),
+		},
+		env,
+	);
+	const sshTarget = options?.sshTarget?.trim() || getDefaultSshTarget(env);
+
+	return {
+		sshTarget,
+		command: `ssh -Y ${quoteShellArg(sshTarget)} ${launchPlan.command}`,
 	};
 }
 
@@ -306,9 +351,14 @@ export async function loginCarrefourAuth(
 
 export async function captureCarrefourAuthState(
 	cdpUrl = DEFAULT_CDP_URL,
+	authStatePath?: string,
 ): Promise<AuthLoginResult> {
 	const config = buildAuthConfigFromEnv();
-	const stateLocation = config.statePath;
+	const stateLocation = expandHomePath(
+		authStatePath?.trim() ||
+			process.env.CARREFOUR_AUTH_CAPTURE_STATE_PATH ||
+			config.statePath,
+	);
 
 	if (!config.enabled) {
 		return {
@@ -349,7 +399,7 @@ export async function captureCarrefourAuthState(
 			};
 		}
 
-		await persistAuthState(context, config.statePath);
+		await persistAuthState(context, stateLocation);
 		return {
 			authenticated: true,
 			statePath: stateLocation,
@@ -429,6 +479,7 @@ export const __testing = {
 	isAuthenticatedSession,
 	DEFAULT_CDP_URL,
 	buildManualChromeLaunchPlan,
+	buildManualChromeRemoteCommandPlan,
 	cleanupManualChromeProfileDir,
 	isValidStorageStatePayload,
 };

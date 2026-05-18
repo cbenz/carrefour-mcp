@@ -2,6 +2,7 @@ import * as cheerio from "cheerio";
 import { readFile } from "node:fs/promises";
 import { chromium, request as playwrightRequest } from "playwright";
 import { buildAuthConfigFromEnv } from "../auth/session.js";
+import { logError } from "../logger.js";
 
 const ORDERS_API_URL = "https://www.carrefour.fr/api/user/orders";
 const ORDERS_PAGE_URL =
@@ -81,6 +82,21 @@ function normalizeUrl(url: string | undefined): string | undefined {
 		return `https://www.carrefour.fr${url}`;
 	}
 	return `https://www.carrefour.fr/${url}`;
+}
+
+async function readResponsePreview(
+	response: import("playwright").APIResponse,
+	maxLength = 800,
+): Promise<string> {
+	const contentType = response.headers()["content-type"] ?? "unknown";
+	const rawBody = await response.text().catch(() => "");
+	const compactBody = rawBody.replace(/\s+/g, " ").trim();
+	const preview =
+		compactBody.length > maxLength
+			? `${compactBody.slice(0, maxLength)}...`
+			: compactBody;
+
+	return `content-type=${contentType}; body=${preview || "<empty>"}`;
 }
 
 // ─── API mapping ───────────────────────────────────────────────────────────────
@@ -186,6 +202,11 @@ async function fetchOrdersApiPage(
 	});
 
 	if (response.status() === 401 || response.status() === 403) {
+		const responsePreview = await readResponsePreview(response);
+		logError(
+			`Carrefour API auth failure for list_orders: status=${response.status()} url=${url.toString()}`,
+			responsePreview,
+		);
 		throw new Error(
 			`Carrefour API returned ${response.status()}. The session may be expired; run auth_login then auth_capture_state again.`,
 		);

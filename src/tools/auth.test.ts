@@ -60,7 +60,7 @@ test("auth testing exports default CDP URL", () => {
 test("buildManualChromeLaunchPlan builds launch command with defaults", () => {
 	const plan = authTesting.buildManualChromeLaunchPlan({});
 
-	expect(plan.chromeBinary).toBe("google-chrome");
+	expect(plan.chromeBinary).toBe("chromium");
 	expect(plan.cdpUrl).toBe("http://127.0.0.1:9222");
 	expect(plan.profileDir).toBe(
 		path.join(homedir(), ".cache", "carrefour-mcp", "manual-chrome"),
@@ -68,6 +68,17 @@ test("buildManualChromeLaunchPlan builds launch command with defaults", () => {
 	expect(plan.args).toContain("--remote-debugging-port=9222");
 	expect(plan.args).toContain(
 		`--user-data-dir=${path.join(homedir(), ".cache", "carrefour-mcp", "manual-chrome")}`,
+	);
+});
+
+test("buildManualChromeRemoteCommandPlan builds ssh command with defaults", () => {
+	const plan = authTesting.buildManualChromeRemoteCommandPlan({});
+
+	expect(plan.sshTarget).toBe("coursicota@203.0.113.42");
+	expect(plan.command).toContain("ssh -Y coursicota@203.0.113.42 chromium");
+	expect(plan.command).toContain("--remote-debugging-port=9222");
+	expect(plan.command).toContain(
+		"--user-data-dir=/home/coursicota/.cache/carrefour-mcp/manual-chrome",
 	);
 });
 
