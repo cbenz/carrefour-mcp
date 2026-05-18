@@ -50,13 +50,12 @@ detect_repo_defaults() {
     REPO_URL="$(git -C "${SOURCE_DIR}" config --get remote.origin.url || true)"
   fi
 
-  if [[ -z "${REPO_BRANCH}" ]]; then
-    REPO_BRANCH="$(git -C "${SOURCE_DIR}" rev-parse --abbrev-ref HEAD || true)"
+  if [[ -z "${REPO_URL}" ]]; then
+    REPO_URL="https://github.com/cbenz/carrefour-mcp"
   fi
 
-  if [[ -z "${REPO_URL}" ]]; then
-    echo "Unable to detect repository URL. Set REPO_URL before running this installer." >&2
-    exit 1
+  if [[ -z "${REPO_BRANCH}" ]]; then
+    REPO_BRANCH="$(git -C "${SOURCE_DIR}" rev-parse --abbrev-ref HEAD || true)"
   fi
 
   if [[ -z "${REPO_BRANCH}" || "${REPO_BRANCH}" == "HEAD" ]]; then

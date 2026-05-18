@@ -110,6 +110,7 @@ pnpm install:browsers
 ```
 
 For a Debian production machine, the repository also provides `deploy/scripts/install.sh`, which creates the Unix user, installs the required system packages, clones or updates the repository on the server, downloads Chromium for Playwright, and installs the systemd service.
+The script can be copied and executed outside a local checkout; if `REPO_URL` is not provided and no local Git metadata is available, it defaults to `https://github.com/cbenz/carrefour-mcp` (branch `main` when not detected).
 
 ## Start The MCP Server
 
