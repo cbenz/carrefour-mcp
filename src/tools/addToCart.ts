@@ -18,11 +18,13 @@ export type CartItemResult = {
 	name: string;
 	productUrl: string;
 	success: boolean;
+	alreadyInCart?: boolean;
 	message?: string;
 };
 
 export type AddToCartResult = {
 	added: number;
+	alreadyInCart: number;
 	failed: number;
 	cartUrl: string;
 	results: CartItemResult[];
@@ -65,11 +67,14 @@ async function addItemToCart(
 			const textButtonVisible = await textButton.isVisible().catch(() => false);
 
 			if (!textButtonVisible) {
+				// Button not found: the product is most likely already in the cart
+				// (Carrefour replaces the add-to-cart button with a quantity stepper).
 				return {
 					name: item.name,
 					productUrl: item.productUrl,
-					success: false,
-					message: "Add to cart button not found on product page.",
+					success: true,
+					alreadyInCart: true,
+					message: "Already in cart.",
 				};
 			}
 
@@ -151,11 +156,13 @@ export async function addToCarrefourCart(
 		await context.close().catch(() => undefined);
 	}
 
-	const added = results.filter((r) => r.success).length;
+	const added = results.filter((r) => r.success && !r.alreadyInCart).length;
+	const alreadyInCart = results.filter((r) => r.alreadyInCart).length;
 	const failed = results.filter((r) => !r.success).length;
 
 	return {
 		added,
+		alreadyInCart,
 		failed,
 		cartUrl: CART_URL,
 		results,

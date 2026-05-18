@@ -55,7 +55,7 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 - `get_order_details`: récupère les détails structurés d'une commande du compte authentifié
 - `search_products`: exécute une requête de recherche full-text et retourne une liste de produits correspondants
 - `get_product_details`: récupère les détails d'une fiche produit Carrefour à partir de son URL ou de son identifiant produit
-- `add_to_cart`: ajoute une liste de produits au panier Carrefour de l'utilisateur authentifié via Playwright
+- `add_to_cart`: ajoute une liste de produits au panier Carrefour de l'utilisateur authentifié via Playwright ; si le bouton « Ajouter au panier » est absent sur une page produit, le produit est considéré comme déjà dans le panier (pas une erreur) ; le résultat distingue les produits ajoutés (`added`), les produits déjà dans le panier (`alreadyInCart`) et les vrais échecs (`failed`)
 
 ## CLI Commands (local only)
 
