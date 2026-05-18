@@ -106,7 +106,7 @@ Install browser runtime:
 pnpm install:browsers
 ```
 
-For a Debian production machine, the repository also provides `deploy/scripts/install.sh`, which creates the Unix user, installs the required system packages (including `chromium` and `xauth`), clones or updates the repository on the server, downloads Chromium for Playwright, and installs the systemd service.
+For a Debian production machine, the repository also provides `deploy/scripts/install.sh`, which creates the Unix user, installs the required system packages (including `chromium` and `xauth`), clones or updates the repository on the server, downloads Chromium for Playwright, installs the systemd service, and restarts it after build when already running. The deployed service unit uses an aggressive restart profile with a short restart delay and a reduced stop timeout.
 The script can be copied and executed outside a local checkout; if `REPO_URL` is not provided and no local Git metadata is available, it defaults to `https://github.com/cbenz/carrefour-mcp` (branch `main` when not detected).
 For remote login with GUI forwarding, `auth_login` prints an SSH `-Y` command that launches `chromium` with remote debugging on the target host.
 

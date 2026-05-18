@@ -12,7 +12,9 @@ EnvironmentFile=-/home/coursicota/etc/carrefour-mcp.env
 Environment=NODE_ENV=production
 ExecStart=/usr/bin/node index.js
 Restart=on-failure
-RestartSec=3
+RestartSec=1
+TimeoutStopSec=10s
+KillMode=mixed
 NoNewPrivileges=true
 PrivateTmp=true
 UMask=0077

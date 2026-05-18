@@ -16,6 +16,8 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 
 - Le projet fournit un sous-répertoire `deploy/` versionné dans Git.
 - Le script d'installation du dépôt crée l'utilisateur Unix dédié, installe les paquets Debian nécessaires (dont `chromium` et `xauth`), clone ou met à jour le dépôt Git sur le serveur, installe Chromium pour Playwright via `npm run install:browsers`, déploie l'unité systemd et démarre le service.
+- Si le service systemd est déjà actif, le script d'installation le redémarre explicitement après le build pour charger les nouveaux artefacts.
+- L'unité systemd de production applique un redémarrage agressif: délai de relance court (`RestartSec=1`) et délai d'arrêt réduit (`TimeoutStopSec=10s`).
 - Le script d'installation peut être exécuté depuis une simple copie du fichier (par exemple via `scp`) sans checkout local préalable.
 - Si `REPO_URL` n'est pas fourni et qu'aucune métadonnée Git locale n'est disponible, le script utilise `https://github.com/cbenz/carrefour-mcp`.
 - Si `REPO_BRANCH` n'est pas fourni et ne peut pas être détecté, le script utilise `main`.

@@ -119,7 +119,8 @@ main() {
   install_service
   systemctl daemon-reload
   build_application
-  systemctl enable --now "${APP_NAME}"
+  systemctl enable "${APP_NAME}"
+  systemctl restart "${APP_NAME}"
 }
 
 main "$@"
