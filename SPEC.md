@@ -122,7 +122,7 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 ### CLI: `auth_upload`
 
 - Input:
-  - `serverUrl` (string URL, requis, endpoint MCP HTTP distant)
+  - `serverUrl` (string URL, optionnel, endpoint MCP HTTP distant)
   - `statePath` (string, optionnel, chemin du fichier `storageState` local à envoyer)
   - `destinationPath` (string, optionnel, chemin de destination sur le serveur distant)
 - Output:
@@ -132,6 +132,8 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - `importResult` (object)
 - Implémentation:
   - lit le fichier `storageState` local puis appelle le tool MCP `auth_import_state` sur `serverUrl`
+  - si `serverUrl` n'est pas fourni, lit `CARREFOUR_AUTH_UPLOAD_SERVER_URL` puis un fichier `.env` local s'il existe
+  - si disponibles, réutilise les identifiants Basic Auth depuis `CARREFOUR_AUTH_UPLOAD_BASIC_AUTH_USER` et `CARREFOUR_AUTH_UPLOAD_BASIC_AUTH_PASSWORD`, avec fallback sur `CARREFOUR_MCP_BASIC_AUTH_USER` et `CARREFOUR_MCP_BASIC_AUTH_PASSWORD`
   - refuse les destinations loopback ou locales (`localhost`, `127.0.0.1`, `::1`)
   - n'utilise aucune valeur par défaut pointant vers un serveur local
 - Note: pour un serveur exécuté sur la même machine, l'import via `auth_upload` n'est pas supporté; il faut utiliser directement le fichier local ou appeler `auth_import_state` explicitement avec un chemin de destination dédié

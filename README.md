@@ -111,6 +111,7 @@ pnpm install:browsers
 
 For a Debian production machine, the repository also provides `deploy/scripts/install.sh`, which creates the Unix user, installs the required system packages, clones or updates the repository on the server, downloads Chromium for Playwright, and installs the systemd service.
 The script can be copied and executed outside a local checkout; if `REPO_URL` is not provided and no local Git metadata is available, it defaults to `https://github.com/cbenz/carrefour-mcp` (branch `main` when not detected).
+The `auth_upload` command can read its remote URL and Basic Auth credentials from environment variables or a local `.env` file: `CARREFOUR_AUTH_UPLOAD_SERVER_URL`, `CARREFOUR_AUTH_UPLOAD_BASIC_AUTH_USER`, and `CARREFOUR_AUTH_UPLOAD_BASIC_AUTH_PASSWORD`.
 
 ## Start The MCP Server
 

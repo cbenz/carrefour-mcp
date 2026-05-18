@@ -23,6 +23,7 @@ import {
 } from "./tools/searchProducts.js";
 import { parseRemoteServerUrl } from "./tools/remoteServerUrl.js";
 import { setupPipeSafeStdout } from "./cliOutput.js";
+import { resolveAuthUploadConfig } from "./authUploadEnv.js";
 
 setupPipeSafeStdout(process.stdout);
 
@@ -63,14 +64,23 @@ async function callImportStateTool(
   serverUrl: string,
   storageState: unknown,
   destinationPath?: string,
+  credentials?: { user: string; password: string },
 ): Promise<unknown> {
+  const headers: Record<string, string> = {
+    Accept: "application/json, text/event-stream",
+    "Content-Type": "application/json",
+    "MCP-Protocol-Version": "2025-03-26",
+  };
+
+  if (credentials) {
+    headers.Authorization = `Basic ${Buffer.from(
+      `${credentials.user}:${credentials.password}`,
+    ).toString("base64")}`;
+  }
+
   const response = await fetch(serverUrl, {
     method: "POST",
-    headers: {
-      Accept: "application/json, text/event-stream",
-      "Content-Type": "application/json",
-      "MCP-Protocol-Version": "2025-03-26",
-    },
+    headers,
     body: JSON.stringify({
       jsonrpc: "2.0",
       id: "auth-upload",
@@ -245,7 +255,7 @@ program
   .description(
     "Upload local auth state to a remote MCP server via auth_import_state",
   )
-  .requiredOption(
+  .option(
     "--server-url <url>",
     "Remote MCP HTTP endpoint URL (must not be localhost or loopback)",
   )
@@ -260,15 +270,19 @@ program
   .action(async function (
     this: Command,
     options: {
-      serverUrl: string;
+      serverUrl?: string;
       statePath?: string;
       destinationPath?: string;
     },
   ): Promise<void> {
+    const authUploadConfig = await resolveAuthUploadConfig({
+      serverUrl: options.serverUrl,
+    });
+
     let remoteServerUrl: string;
 
     try {
-      remoteServerUrl = parseRemoteServerUrl(options.serverUrl);
+      remoteServerUrl = parseRemoteServerUrl(authUploadConfig.serverUrl);
     } catch (error) {
       if (error instanceof InvalidArgumentError) {
         this.error(error.message, { exitCode: 1, code: error.code });
@@ -302,6 +316,7 @@ program
       remoteServerUrl,
       storageState,
       options.destinationPath,
+      authUploadConfig.credentials,
     );
 
     process.stdout.write(
