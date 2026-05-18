@@ -12,6 +12,7 @@ carrefour-mcp lets you search products on Carrefour France and get structured re
 - MCP tool available: auth_logout
 - MCP tool available: list_orders
 - MCP tool available: get_order_details
+- Optional HTTP protection can be handled at deployment level (for example with Basic Auth on a reverse proxy)
 - CLI command available: carrefour-mcp search_products
 - CLI command available: carrefour-mcp get_product_details
 - CLI command available: carrefour-mcp auth_login
@@ -107,6 +108,8 @@ Install browser runtime:
 ```bash
 pnpm install:browsers
 ```
+
+For a Debian production machine, the repository also provides `deploy/scripts/install.sh`, which creates the Unix user, installs the required system packages, clones or updates the repository on the server, downloads Chromium for Playwright, and installs the systemd service.
 
 ## Start The MCP Server
 
@@ -214,7 +217,10 @@ pnpm --silent cli auth_upload --server-url https://carrefour-mcp.coursicota.com/
 ```
 
 `auth_upload` refuses local MCP destinations such as `localhost`, `127.0.0.1`, and `::1`.
-If the MCP server runs on the same machine, keep using the local session file directly instead of uploading it back to the same host.
+If the MCP server runs on the same machine, keep using the local auth state file directly instead of uploading it back to the same host.
+
+Authentication state is stored in a local JSON file (default path: `~/.cache/carrefour-mcp/auth-state.json`).
+You can override it with `CARREFOUR_AUTH_STATE_PATH`.
 
 Check status:
 

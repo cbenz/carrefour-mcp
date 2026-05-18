@@ -12,10 +12,18 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 - Playwright (Chromium)
 - Commander.js pour le CLI
 
+## Déploiement
+
+- Le projet fournit un sous-répertoire `deploy/` versionné dans Git.
+- Le script d'installation du dépôt crée l'utilisateur Unix dédié, installe les paquets Debian nécessaires, clone ou met à jour le dépôt Git sur le serveur, installe Chromium pour Playwright via `npm run install:browsers`, déploie l'unité systemd et démarre le service.
+- Le service systemd démarre depuis le répertoire de build `dist` du checkout serveur.
+- Le serveur HTTP reste lié à `127.0.0.1:3000` sur la machine de production.
+
 ## Fonctionnalités
 
 - Le serveur expose un transport `stdio` pour les clients MCP locaux.
 - Le serveur expose aussi un transport `http` (endpoint MCP) pour une exécution distante.
+- Les tools d'authentification et de commandes utilisent un stockage de session Carrefour unique, partagé par l'instance.
 - Le démarrage est piloté par variable d'environnement :
   - `MCP_TRANSPORT=stdio` pour `stdio` seul
   - `MCP_TRANSPORT=http` pour `http` seul
@@ -44,6 +52,7 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 - `get_order_details`: récupère les détails structurés d'une commande du compte authentifié
 - `search_products`: exécute une requête de recherche full-text et retourne une liste de produits correspondants
 - `get_product_details`: récupère les détails d'une fiche produit Carrefour à partir de son URL ou de son identifiant produit
+- `add_to_cart`: ajoute une liste de produits au panier Carrefour de l'utilisateur authentifié via Playwright
 
 ## CLI Commands (local only)
 
@@ -97,17 +106,15 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
 
 - Input:
   - `storageState` (object, requis, format Playwright `storageState`)
-  - `destinationPath` (string, optionnel, chemin destination du fichier ; utilise `CARREFOUR_AUTH_STATE_PATH` si non fourni)
+  - `destinationPath` (string, optionnel, chemin du fichier de destination ; utilise `CARREFOUR_AUTH_STATE_PATH` si non fourni)
 - Output:
   - `imported` (boolean)
-  - `statePath` (string, chemin où l'état a été sauvegardé)
+  - `statePath` (string)
   - `updatedAt` (string ISO 8601)
   - `message` (string)
 - Implémentation:
   - valide le payload minimal (`cookies` array et `origins` array)
-  - écrit l'état importé à `destinationPath` ou `CARREFOUR_AUTH_STATE_PATH` par défaut
-  - applique les permissions de fichier restreintes (0o600)
-- Note: Le paramètre `destinationPath` peut être utilisé pour éviter de surcharger le fichier local lors d'un import depuis un serveur MCP sur la même machine
+  - écrit l'état importé à `destinationPath` (si fourni) ou au chemin d'état par défaut
 
 ### CLI: `auth_upload`
 
@@ -134,6 +141,11 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - `loggedOut` (boolean)
   - `statePath` (string)
 
+## Stockage de session d'authentification
+
+- Le storage state Playwright est persisté dans un fichier JSON local unique par instance.
+- Le chemin du fichier JSON local est configuré via `CARREFOUR_AUTH_STATE_PATH` (défaut: `~/.cache/carrefour-mcp/auth-state.json`).
+
 ### `list_orders`
 
 - Input:
@@ -154,7 +166,7 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
   - ordre de tri: commandes triées par date décroissante (plus récente vers plus ancienne)
 - Implémentation:
   - utilise l'API interne `https://www.carrefour.fr/api/user/orders` avec les cookies de la session authentifiée
-  - en mode auth state : lit les cookies depuis le fichier `storageState` Playwright sauvegardé localement
+  - en mode auth state : lit les cookies depuis le fichier JSON local
   - en mode CDP : se connecte au navigateur via CDP, extrait les cookies Carrefour, puis appelle l'API HTTP
   - pagination par curseur : première requête sur `page=1&pageSize=20`, puis requêtes suivantes avec `scrollPaging` et `scrollHash` retournés dans `meta`
   - itère jusqu'à obtenir `limit` commandes si `limit` est fourni, sinon jusqu'à épuisement du curseur
@@ -204,7 +216,7 @@ Interagir avec le site `https://www.carrefour.fr` pour récupérer des informati
     - `url` (string, optionnel)
 - Implémentation:
   - utilise l'API interne `https://www.carrefour.fr/api/user/orders/{orderNumber}` avec les cookies de la session authentifiée
-  - en mode auth state : lit les cookies depuis le fichier `storageState` Playwright sauvegardé localement
+  - en mode auth state : lit les cookies depuis le fichier JSON local
   - en mode CDP : se connecte au navigateur via CDP et utilise son contexte de requête pour appeler l'API
   - extrait la commande de la réponse JSON (`attributes`)
   - extrait les produits depuis `productList.categories[].products[]`

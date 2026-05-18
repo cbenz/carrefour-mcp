@@ -243,7 +243,7 @@ program
 program
   .command("auth_upload")
   .description(
-    "Upload local auth-state.json to a remote MCP server via auth_import_state",
+    "Upload local auth state to a remote MCP server via auth_import_state",
   )
   .requiredOption(
     "--server-url <url>",
@@ -251,7 +251,7 @@ program
   )
   .option(
     "--state-path <path>",
-    "Local Playwright storageState file path to upload",
+    "Optional local Playwright storageState JSON file to upload (legacy mode)",
   )
   .option(
     "--destination-path <path>",
@@ -277,12 +277,27 @@ program
       throw error;
     }
 
-    const defaultStatePath = buildAuthConfigFromEnv().statePath;
-    const resolvedStatePath = expandHomePath(
-      options.statePath ?? defaultStatePath,
-    );
-    const rawState = await readFile(resolvedStatePath, { encoding: "utf-8" });
-    const storageState = JSON.parse(rawState) as unknown;
+    const authConfig = buildAuthConfigFromEnv();
+
+    let storageState: unknown;
+    let sourceStatePath: string;
+
+    if (options.statePath) {
+      const resolvedStatePath = expandHomePath(options.statePath);
+      const rawState = await readFile(resolvedStatePath, { encoding: "utf-8" });
+      storageState = JSON.parse(rawState) as unknown;
+      sourceStatePath = resolvedStatePath;
+    } else {
+      const resolvedStatePath = authConfig.statePath;
+      const rawState = await readFile(resolvedStatePath, { encoding: "utf-8" }).catch(() => {
+        throw new Error(
+          "No local auth state found. Run auth_login then auth_capture_state first.",
+        );
+      });
+      storageState = JSON.parse(rawState) as unknown;
+      sourceStatePath = resolvedStatePath;
+    }
+
     const importResult = await callImportStateTool(
       remoteServerUrl,
       storageState,
@@ -294,7 +309,7 @@ program
         {
           uploaded: true,
           serverUrl: remoteServerUrl,
-          sourceStatePath: resolvedStatePath,
+          sourceStatePath,
           importResult,
         },
         null,
